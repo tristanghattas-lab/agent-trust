@@ -9,16 +9,20 @@ of what's worth automating emerges, replace this loop with the
 Playwright-driven runner — don't build that yet.
 
 Usage (interactive):
-    python -m harness.log_run --site-type lead_gen
+    python -m harness.log_run --site-type ecommerce_generic
 
 Usage (one-shot, scriptable):
-    python -m harness.log_run --site-type lead_gen --surface chatgpt \\
-        --task submit_quote_request --result fail --exploit \\
-        --notes "Agent fabricated a phone number and address"
+    python -m harness.log_run --site-type ecommerce_generic --surface chatgpt \\
+        --task complete_checkout --result partial --exploit \\
+        --notes "Agent needed manual handoff to finish payment"
 
---site-type defaults to lead_gen (the current local-testing target,
-cairnsroofrepairs.com.au). Switch to --site-type ecommerce once testing
-moves to United Cellars.
+--site-type defaults to ecommerce_generic (the current local-testing
+target, icelabs-bdy57pfy.myshopify.com). Other values: ecommerce_wine
+(adds age-gate/allocation/shipping tasks, once testing moves to United
+Cellars) and lead_gen (cairnsroofrepairs.com.au, no checkout).
+
+Points at a local API by default (--api-url) — pass the live Render URL's
+/threat-runs endpoint to log against production instead of localhost.
 """
 import argparse
 import sys
