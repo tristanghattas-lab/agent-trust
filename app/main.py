@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session as DBSession
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.classify import classify_session
 from app.db import Base, engine, get_db
@@ -27,6 +28,7 @@ from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
 
 logger = logging.getLogger("agent_trust.webhooks")
+cors_logger = logging.getLogger("agent_trust.cors")
 
 load_dotenv()
 
@@ -41,6 +43,34 @@ app.add_middleware(
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
+
+
+class OriginLoggingMiddleware(BaseHTTPMiddleware):
+    """Logs every request's Origin header before CORSMiddleware gets a
+    chance to reject it (with a 400) — which is exactly the case where the
+    request never reaches a route handler, so nothing else ever sees it.
+
+    Deliberately doesn't change what's allowed, only what's visible: a
+    site whose whole purpose is trustworthy traffic signal shouldn't loosen
+    CORS on its own ingestion endpoint just to see who got rejected. Added
+    *after* CORSMiddleware so it wraps it (outer middleware runs first) and
+    sees the request regardless of what CORSMiddleware does with it.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin")
+        if origin and origin != site_origin and site_origin != "*":
+            cors_logger.info(
+                "Cross-origin request (blocked by CORS): origin=%s method=%s path=%s ua=%s",
+                origin,
+                request.method,
+                request.url.path,
+                request.headers.get("user-agent"),
+            )
+        return await call_next(request)
+
+
+app.add_middleware(OriginLoggingMiddleware)
 
 
 @app.on_event("startup")
