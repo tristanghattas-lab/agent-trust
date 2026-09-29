@@ -1,23 +1,29 @@
 """
 FastAPI ingestion + query API.
 
-- POST /ingest        — the capture snippet posts session events here
-- POST /threat-runs    — the harness logs manual/automated test runs here
-- GET  /health         — sanity check
+- POST /ingest                  — the capture snippet posts session events here
+- POST /webhooks/shopify/orders — Shopify posts here the moment an order completes
+- POST /threat-runs             — the harness logs manual/automated test runs here
+- GET  /health                  — sanity check
 """
+import logging
 import os
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session as DBSession
 
 from app.classify import classify_session
 from app.db import Base, engine, get_db
+from app.models import Order
 from app.models import Session as SessionModel
 from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
+from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
+
+logger = logging.getLogger("agent_trust.webhooks")
 
 load_dotenv()
 
@@ -114,6 +120,51 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         "agent_family": session.agent_family,
         "confidence": session.classification_confidence,
     }
+
+
+@app.post("/webhooks/shopify/orders")
+async def shopify_order_webhook(
+    request: Request,
+    db: DBSession = Depends(get_db),
+    x_shopify_hmac_sha256: str | None = Header(default=None),
+    x_shopify_topic: str | None = Header(default=None),
+):
+    raw_body = await request.body()
+    secret = get_webhook_secret()
+
+    if not verify_shopify_hmac(raw_body, x_shopify_hmac_sha256, secret):
+        # Fails closed: an unconfigured secret (empty string) also fails
+        # verification, so this can't be silently bypassed by leaving
+        # SHOPIFY_WEBHOOK_SECRET unset.
+        logger.warning("Rejected Shopify webhook with invalid HMAC (topic=%s)", x_shopify_topic)
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    payload = await request.json()
+    order_in = parse_order_payload(payload)
+
+    existing = (
+        db.query(Order)
+        .filter(Order.shopify_order_id == order_in.shopify_order_id)
+        .one_or_none()
+    )
+    if existing is not None:
+        # Shopify retries webhooks on timeout/non-2xx; treat a duplicate
+        # delivery as a no-op rather than erroring or double-counting.
+        return {"status": "already_recorded", "order_id": existing.id}
+
+    order = Order(
+        shopify_order_id=order_in.shopify_order_id,
+        session_key=order_in.session_key,
+        order_value=order_in.order_value,
+        currency=order_in.currency,
+        shipping_state=order_in.shipping_state,
+        allocation_flagged=order_in.allocation_flagged,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+
+    return {"status": "recorded", "order_id": order.id, "session_matched": order.session_key is not None}
 
 
 @app.post("/threat-runs")

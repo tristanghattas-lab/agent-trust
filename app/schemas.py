@@ -18,6 +18,18 @@ class IngestEvent(BaseModel):
     cf_bot_category: str | None = None
 
 
+class OrderIn(BaseModel):
+    """Normalised shape we store, after pulling the bits we need out of
+    Shopify's much larger order webhook payload."""
+
+    shopify_order_id: str
+    order_value: float
+    currency: str = "AUD"
+    shipping_state: str | None = None
+    session_key: str | None = None
+    allocation_flagged: bool = False
+
+
 class ThreatTestRunIn(BaseModel):
     agent_surface: str
     task_name: str
