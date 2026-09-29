@@ -21,6 +21,12 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
+      # Pinned because Render's default (3.14, brand new) has no prebuilt
+      # wheel for pydantic-core yet, so pip tries to compile it from Rust
+      # source and fails on Render's read-only build filesystem. Also see
+      # .python-version at the repo root — belt and braces.
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: DATABASE_URL
         fromDatabase:
           name: agent-trust-db
@@ -44,6 +50,8 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0"
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: DATABASE_URL
         fromDatabase:
           name: agent-trust-db
