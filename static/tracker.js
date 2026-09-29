@@ -86,20 +86,22 @@
         payload
       )
     );
+    // Not sendBeacon: it always sends credentials, and a credentialed
+    // cross-origin JSON POST needs Access-Control-Allow-Credentials on the
+    // preflight — without it the browser silently drops the POST after a
+    // 200 OPTIONS. The API doesn't use cookies, so omit them; keepalive
+    // gives the same survive-page-unload behaviour sendBeacon did.
+    if (!originalFetch) return;
     try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(
-          API,
-          new Blob([body], { type: "application/json" })
-        );
-      } else {
-        fetch(API, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: body,
-          keepalive: true,
-        });
-      }
+      originalFetch(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body,
+        keepalive: true,
+        credentials: "omit",
+      }).catch(function () {
+        /* never let tracking break the page */
+      });
     } catch (e) {
       /* never let tracking break the page */
     }
