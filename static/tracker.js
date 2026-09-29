@@ -42,6 +42,32 @@
 
   var sessionKey = getSessionKey();
 
+  // Shopify-only: write the session key onto the cart itself, via Shopify's
+  // own AJAX Cart API. This is what lets the order webhook (server-side,
+  // never sees this script) match a completed order back to the session
+  // that produced it — the webhook reads this same attribute name back out
+  // of the order payload (see app/shopify_webhooks.py, SESSION_ATTRIBUTE_NAME).
+  // Same-origin relative to the storefront page, so no CORS setup needed.
+  // Silently a no-op on any site that isn't Shopify (the fetch 404s and is
+  // ignored) — tracker.js is also used on non-Shopify site types.
+  function syncShopifyCartAttribute() {
+    if (!window.Shopify) return;
+    try {
+      fetch("/cart/update.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          attributes: { agent_trust_session: sessionKey },
+        }),
+        keepalive: true,
+      }).catch(function () {
+        /* no cart yet, or not actually Shopify — ignore either way */
+      });
+    } catch (e) {
+      /* never let tracking break the page */
+    }
+  }
+
   function post(payload) {
     var body = JSON.stringify(
       Object.assign(
@@ -77,12 +103,18 @@
   // Basic pageview on load.
   post({ event_count: 1 });
 
+  // A cart may already exist from an earlier page view (Shopify carts
+  // persist across the visit), so try to tag it immediately too — not
+  // just on the next cartUpdated() call.
+  syncShopifyCartAttribute();
+
   // Public API the site's own checkout/age-gate code calls directly —
   // this is the part generic bot-detection tools can't see, because it
   // requires knowing what "checkout" and "age gate" mean on this site.
   window.AgentTrust = {
     cartUpdated: function (value) {
       post({ event_count: 1, cart_value: value });
+      syncShopifyCartAttribute();
     },
     checkoutStarted: function () {
       post({ event_count: 1, checkout_started: true });
