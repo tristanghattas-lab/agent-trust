@@ -9,32 +9,38 @@ of what's worth automating emerges, replace this loop with the
 Playwright-driven runner — don't build that yet.
 
 Usage (interactive):
-    python -m harness.log_run
+    python -m harness.log_run --site-type lead_gen
 
 Usage (one-shot, scriptable):
-    python -m harness.log_run --surface chatgpt --task age_verification \\
-        --result fail --exploit --notes "Agent proceeded without asking DOB"
+    python -m harness.log_run --site-type lead_gen --surface chatgpt \\
+        --task submit_quote_request --result fail --exploit \\
+        --notes "Agent fabricated a phone number and address"
+
+--site-type defaults to lead_gen (the current local-testing target,
+cairnsroofrepairs.com.au). Switch to --site-type ecommerce once testing
+moves to United Cellars.
 """
 import argparse
 import sys
 
 import requests
 
-from harness.tasks import AGENT_SURFACES, TASKS
+from harness.tasks import AGENT_SURFACES, DEFAULT_SITE_TYPE, SITE_TASKS
 
 API_URL_DEFAULT = "http://localhost:8000/threat-runs"
 
 
-def _task_by_key(key: str):
-    for t in TASKS:
+def _task_by_key(tasks: list, key: str):
+    for t in tasks:
         if t.key == key:
             return t
-    raise SystemExit(f"Unknown task key: {key}. Valid: {[t.key for t in TASKS]}")
+    raise SystemExit(f"Unknown task key: {key}. Valid: {[t.key for t in tasks]}")
 
 
 def log_run(
     *,
     api_url: str,
+    site_type: str,
     surface: str,
     task_key: str,
     result: str,
@@ -42,7 +48,7 @@ def log_run(
     notes: str | None,
     tester: str | None,
 ) -> None:
-    task = _task_by_key(task_key)
+    task = _task_by_key(SITE_TASKS[site_type], task_key)
     payload = {
         "agent_surface": surface,
         "task_name": task.key,
@@ -57,16 +63,17 @@ def log_run(
     print(f"Logged: {surface} / {task.key} -> {result} (id={resp.json().get('id')})")
 
 
-def interactive(api_url: str) -> None:
-    print("Agent Trust — manual threat-test logger\n")
+def interactive(api_url: str, site_type: str) -> None:
+    tasks = SITE_TASKS[site_type]
+    print(f"Agent Trust — manual threat-test logger [site type: {site_type}]\n")
     print("Surfaces:", ", ".join(AGENT_SURFACES))
     surface = input("Agent surface: ").strip()
 
     print("\nTasks:")
-    for t in TASKS:
-        print(f"  {t.key:22s} [{t.category:10s}] {t.prompt}")
+    for t in tasks:
+        print(f"  {t.key:24s} [{t.category:10s}] {t.prompt}")
     task_key = input("\nTask key: ").strip()
-    task = _task_by_key(task_key)
+    task = _task_by_key(tasks, task_key)
     print(f"\nExploit signal to watch for: {task.exploit_signal}")
 
     result = input("Result (pass/fail/partial): ").strip().lower()
@@ -77,6 +84,7 @@ def interactive(api_url: str) -> None:
 
     log_run(
         api_url=api_url,
+        site_type=site_type,
         surface=surface,
         task_key=task_key,
         result=result,
@@ -89,8 +97,9 @@ def interactive(api_url: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-url", default=API_URL_DEFAULT)
+    parser.add_argument("--site-type", default=DEFAULT_SITE_TYPE, choices=list(SITE_TASKS))
     parser.add_argument("--surface", choices=AGENT_SURFACES)
-    parser.add_argument("--task", dest="task_key", choices=[t.key for t in TASKS])
+    parser.add_argument("--task", dest="task_key")
     parser.add_argument("--result", choices=["pass", "fail", "partial"])
     parser.add_argument("--exploit", action="store_true", default=False)
     parser.add_argument("--notes")
@@ -100,6 +109,7 @@ def main() -> None:
     if args.surface and args.task_key and args.result:
         log_run(
             api_url=args.api_url,
+            site_type=args.site_type,
             surface=args.surface,
             task_key=args.task_key,
             result=args.result,
@@ -108,7 +118,7 @@ def main() -> None:
             tester=args.tester,
         )
     else:
-        interactive(args.api_url)
+        interactive(args.api_url, args.site_type)
 
 
 if __name__ == "__main__":
