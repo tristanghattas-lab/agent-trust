@@ -81,15 +81,17 @@ can't reach `localhost`, and Shopify webhooks need somewhere real to POST to.
    data-api="https://<api-service>.onrender.com/ingest"></script>` to the
    theme (Shopify: Online Store → Themes → Edit code → `theme.liquid`,
    just before `</head>`).
-2. Call `window.AgentTrust.cartUpdated()` / `.ageGateShown()` /
-   `.ageGateResult()` from the site's own cart/age-gate code — this is the
-   signal generic bot detection can't see. Skip `.checkoutStarted()` /
-   `.checkoutCompleted()`: on Shopify those never fire (see above), the
-   webhook replaces them.
-   - On Shopify, `cartUpdated()` (and page load, for a cart that already
-     exists) also writes the session key onto the cart itself via
-     `POST /cart/update.js` — that's what lets the order webhook match a
-     completed order back to the session. No-op on non-Shopify sites.
+2. On Shopify, cart tracking needs no further wiring: `tracker.js`
+   auto-detects the theme's own AJAX cart calls (`/cart/add.js`,
+   `/cart/change.js`, etc.) and treats a successful one as a
+   `cartUpdated()` — covering Dawn and most modern themes. It also writes
+   the session key onto the cart via `POST /cart/update.js` at the same
+   time, which is what lets the order webhook match a completed order back
+   to the session. For age-gate tracking (any site type), or a cart flow
+   that doesn't use `fetch`, call `window.AgentTrust.ageGateShown()` /
+   `.ageGateResult()` / `.cartUpdated()` directly from the site's own code.
+   Skip `.checkoutStarted()` / `.checkoutCompleted()`: on Shopify those
+   never fire (see above), the webhook replaces them.
 3. If the site is behind Cloudflare, pass its bot-category header
    through as `cf_bot_category` on ingest — free signal, don't re-derive it.
 4. Run the manual harness against the site per `harness/tasks.py`
