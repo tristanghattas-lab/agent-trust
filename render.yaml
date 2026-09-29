@@ -1,0 +1,50 @@
+## Render Blueprint — deploys the API, the dashboard, and Postgres together.
+## Connect this repo at https://dashboard.render.com/blueprints (New + -> Blueprint)
+## and Render reads this file automatically.
+##
+## Free tier notes: the web services sleep after 15 min idle (~1 min cold
+## start on the next request), and the free Postgres expires 30 days after
+## creation. Fine for a testing window; upgrade both if this needs to run
+## longer than that.
+
+databases:
+  - name: agent-trust-db
+    plan: free
+    databaseName: agenttrust
+    user: agenttrust
+
+services:
+  - type: web
+    name: agent-trust-api
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agent-trust-db
+          property: connectionString
+      - key: SITE_ORIGIN
+        value: https://icelabs-bdy57pfy.myshopify.com
+      - key: SHOPIFY_STORE_DOMAIN
+        value: icelabs-bdy57pfy.myshopify.com
+      # Set these two in the Render dashboard after deploy — not committed
+      # to the repo. SHOPIFY_WEBHOOK_SECRET comes from Shopify when you
+      # create the orders/create webhook (Settings -> Notifications).
+      - key: SHOPIFY_WEBHOOK_SECRET
+        sync: false
+      - key: SHOPIFY_ADMIN_API_TOKEN
+        sync: false
+
+  - type: web
+    name: agent-trust-dashboard
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agent-trust-db
+          property: connectionString

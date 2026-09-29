@@ -7,15 +7,18 @@ Two modes, one database:
 
 1. **Visibility & optimisation** — `static/tracker.js` on the site posts
    to `app/main.py`'s `/ingest` endpoint, which classifies each session
-   (`app/classify.py`, rule-based for now) and stores it. Orders and
-   outcomes join against sessions by `session_key` — that join is the
-   whole point, not the dashboard polish.
-2. **Threat testing** — `harness/tasks.py` holds the United Cellars
-   validation task list. `harness/log_run.py` is a CLI for logging
-   results after manually operating an agent (ChatGPT, Perplexity, a
-   browser-use agent, Gemini) through each task. Don't build the
-   Playwright automation (`harness/playwright_runner.py`, currently a
-   stub) until manual runs show what's worth automating.
+   (`app/classify.py`, rule-based for now) and stores it. Orders land via
+   the Shopify order webhook (`app/shopify_webhooks.py` — checkout is
+   Shopify-hosted, so client JS never sees it; the webhook is the real
+   signal, not an inference from page timing). Orders and outcomes join
+   against sessions by `session_key` — that join is the whole point, not
+   the dashboard polish.
+2. **Threat testing** — `harness/tasks.py` holds task lists by site type
+   (`ecommerce_generic`, `ecommerce_wine`, `lead_gen`). `harness/log_run.py`
+   is a CLI for logging results after manually operating an agent
+   (ChatGPT, Perplexity, a browser-use agent, Gemini) through each task.
+   Don't build the Playwright automation (`harness/playwright_runner.py`,
+   currently a stub) until manual runs show what's worth automating.
 
 Both feed `dashboard/app.py`, a single Streamlit dashboard.
 
@@ -52,27 +55,49 @@ python -m harness.log_run --surface chatgpt --task age_verification \
     --result fail --exploit --notes "Agent proceeded without asking DOB"
 ```
 
-## Wiring it to the real site (once the pilot is greenlit)
+## Deploying (Render)
 
-1. Get sign-off from United Cellars, or start against a staging environment.
-2. Add `<script src=".../tracker.js" data-api=".../ingest"></script>` to
-   the site, and call `window.AgentTrust.cartUpdated()` /
-   `.checkoutStarted()` / `.checkoutCompleted()` /
-   `.ageGateShown()` / `.ageGateResult()` from the site's own checkout
-   and age-gate code — this is the signal generic bot detection can't see.
-3. Pull Shopify order data into the `orders` table (fill in
-   `SHOPIFY_STORE_DOMAIN` / `SHOPIFY_ADMIN_API_TOKEN` in `.env`; the
-   sync script isn't built yet — build it once there's a real store to
-   point at).
-4. If the site is behind Cloudflare, pass its bot-category header
+Local testing needs a public URL — an agent hitting the real storefront
+can't reach `localhost`, and Shopify webhooks need somewhere real to POST to.
+
+1. Push this repo to GitHub (already done for `tristanghattas-lab/agent-trust`).
+2. In Render: **New + → Blueprint**, point it at the repo. `render.yaml`
+   defines the API, the dashboard, and a free Postgres together — Render
+   reads it automatically.
+3. After the first deploy, set `SHOPIFY_WEBHOOK_SECRET` (and, later,
+   `SHOPIFY_ADMIN_API_TOKEN` if needed) in the API service's Environment
+   tab — these aren't committed to the repo.
+4. In the Shopify store: **Settings → Notifications → Webhooks → Create
+   webhook**, event `Order creation`, format JSON, URL
+   `https://<api-service>.onrender.com/webhooks/shopify/orders`. Shopify
+   shows the signing secret once, at creation — that's what goes into step 3.
+5. Free tier: web services sleep after 15 min idle (~1 min cold start on
+   the next hit), and the free Postgres expires 30 days after creation.
+   Fine for a testing window; upgrade both if this needs to outlive that.
+
+## Wiring the tracker to a site
+
+1. Add `<script src="https://<api-service>.onrender.com/tracker.js"
+   data-api="https://<api-service>.onrender.com/ingest"></script>` to the
+   theme (Shopify: Online Store → Themes → Edit code → `theme.liquid`,
+   just before `</head>`).
+2. Call `window.AgentTrust.cartUpdated()` / `.ageGateShown()` /
+   `.ageGateResult()` from the site's own cart/age-gate code — this is the
+   signal generic bot detection can't see. Skip `.checkoutStarted()` /
+   `.checkoutCompleted()`: on Shopify those never fire (see above), the
+   webhook replaces them.
+3. If the site is behind Cloudflare, pass its bot-category header
    through as `cf_bot_category` on ingest — free signal, don't re-derive it.
-5. Run the manual harness against the live/staging site per
-   `harness/tasks.py`.
+4. Run the manual harness against the site per `harness/tasks.py`
+   (`python -m harness.log_run --site-type ecommerce_generic`, or
+   `ecommerce_wine` / `lead_gen` for the other site types).
 
 ## Not built yet (on purpose)
 
-- Shopify order sync (`orders` table is populated by hand or by the
-  seed script until then).
+- Session→order matching: `tracker.js` doesn't yet write the session key
+  into the Shopify cart's attributes (AJAX Cart API,
+  `POST /cart/update.js`), so orders land with `session_key=None` until
+  that's added. The webhook pipeline itself is tested and working without it.
 - Automated threat-testing runner (`harness/playwright_runner.py`).
 - Anything ML-based in `app/classify.py` — rules first, until there's
   enough labelled outcome data to justify a model.

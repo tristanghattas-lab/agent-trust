@@ -1,6 +1,7 @@
 """
 FastAPI ingestion + query API.
 
+- GET  /tracker.js              — the capture snippet itself, for <script src="">
 - POST /ingest                  — the capture snippet posts session events here
 - POST /webhooks/shopify/orders — Shopify posts here the moment an order completes
 - POST /threat-runs             — the harness logs manual/automated test runs here
@@ -9,10 +10,12 @@ FastAPI ingestion + query API.
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session as DBSession
 
 from app.classify import classify_session
@@ -45,9 +48,24 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
 
 
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/tracker.js")
+def tracker_js():
+    # Served explicitly (not via StaticFiles mount) so the URL is exactly
+    # /tracker.js, matching the <script src="..."> in the README/theme
+    # snippet, rather than /static/tracker.js.
+    return FileResponse(
+        STATIC_DIR / "tracker.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 @app.post("/ingest")
