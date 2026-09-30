@@ -172,6 +172,26 @@
   // Basic pageview on load.
   post({ event_count: 1 });
 
+  // Flush this page's behavioural metrics when the visitor leaves it.
+  // Without this they only ever went out with the load-time pageview —
+  // before any mouse movement or click could happen — so every page's
+  // actual interaction was lost on navigation. event_count 0: a metrics
+  // update, not a new event. Skipped when nothing moved or clicked since
+  // the last send, so pagehide + visibilitychange don't double-post.
+  var flushedMoves = 0;
+  var flushedClicks = 0;
+  function flushMetrics() {
+    if (pointerEnv !== "fine") return;
+    if (mouseMoveCount === flushedMoves && clickCount === flushedClicks) return;
+    flushedMoves = mouseMoveCount;
+    flushedClicks = clickCount;
+    post({ event_count: 0 });
+  }
+  window.addEventListener("pagehide", flushMetrics);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") flushMetrics();
+  });
+
   // A cart may already exist from an earlier page view (Shopify carts
   // persist across the visit), so try to tag it immediately too — not
   // just on the next cartUpdated() call.
@@ -199,16 +219,43 @@
     },
   };
 
+  // Report the cart total. /cart/change.js-style responses carry the whole
+  // cart (total_price); Dawn's /cart/add returns only the added line item,
+  // so fall back to one /cart.js read for the real total.
+  function reportCart(data) {
+    if (data && typeof data.total_price === "number") {
+      window.AgentTrust.cartUpdated(data.total_price / 100);
+      return;
+    }
+    originalFetch("/cart.js", { credentials: "same-origin" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (cart) {
+        window.AgentTrust.cartUpdated(
+          cart && typeof cart.total_price === "number" ? cart.total_price / 100 : undefined
+        );
+      })
+      .catch(function () {
+        window.AgentTrust.cartUpdated();
+      });
+  }
+
   // Shopify-only: auto-detect the theme's own AJAX cart calls
-  // (/cart/add.js, /cart/change.js, /cart/update.js, /cart/clear.js) and
-  // treat a successful one as a cartUpdated() — covers Dawn and most
-  // modern themes with zero theme-code edits beyond the <script> tag.
+  // (/cart/add, /cart/change, /cart/update, /cart/clear — with or without
+  // .js, and under a locale prefix like /en-au/cart/add) and treat a
+  // successful one as a cartUpdated(). The .js was optional all along:
+  // Dawn posts to routes.cart_add_url, which is plain "/cart/add", so the
+  // old .js-only pattern never matched a single add-to-cart on this store.
   // Sites that don't use fetch for their cart (rare) still work via the
   // explicit window.AgentTrust.cartUpdated() call documented above.
   if (window.Shopify && originalFetch) {
     window.fetch = function (input, init) {
-      var url = typeof input === "string" ? input : (input && input.url) || "";
-      var isCartCall = /\/cart\/(add|change|update|clear)\.js(\?|$)/.test(url);
+      var url =
+        typeof input === "string"
+          ? input
+          : (input && (input.url || input.href)) || "";
+      var isCartCall = /\/cart\/(add|change|update|clear)(\.js)?(\?|#|$)/.test(url);
       var result = originalFetch(input, init);
       if (isCartCall) {
         result
@@ -218,18 +265,12 @@
               response
                 .clone()
                 .json()
-                .then(function (data) {
-                  var val =
-                    data && typeof data.total_price === "number"
-                      ? data.total_price / 100
-                      : undefined;
-                  window.AgentTrust.cartUpdated(val);
-                })
+                .then(reportCart)
                 .catch(function () {
-                  window.AgentTrust.cartUpdated();
+                  reportCart(null);
                 });
             } catch (e) {
-              window.AgentTrust.cartUpdated();
+              reportCart(null);
             }
           })
           .catch(function () {
