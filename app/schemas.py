@@ -17,6 +17,12 @@ class IngestEvent(BaseModel):
     age_gate_passed: bool | None = None
     cf_bot_category: str | None = None
 
+    # Automation-detection signal (see static/tracker.js for why this
+    # works) — only meaningful on a fine/mouse pointer, null otherwise.
+    pointer_env: str | None = None  # "fine" | "coarse" | "unknown"
+    mouse_event_rate: float | None = None
+    teleport_click_ratio: float | None = None
+
 
 class OrderIn(BaseModel):
     """Normalised shape we store, after pulling the bits we need out of

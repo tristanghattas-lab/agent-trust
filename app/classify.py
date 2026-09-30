@@ -55,6 +55,9 @@ def classify_session(
     time_to_checkout_seconds: float | None,
     cart_value: float | None,
     cf_bot_category: str | None = None,
+    pointer_env: str | None = None,
+    mouse_event_rate: float | None = None,
+    teleport_click_ratio: float | None = None,
 ) -> ClassificationResult:
     reasons: list[str] = []
     confidence = 0.0
@@ -97,6 +100,31 @@ def classify_session(
                 f"fast_checkout:{time_to_checkout_seconds:.1f}s_for_${cart_value:.0f}"
             )
             confidence += 0.25
+
+    # Rule 5: no raw mousemove trail before a click — the actual
+    # automation-detection mechanism, not just session metadata (see
+    # tracker.js for why this is structurally hard to fake). Gated to
+    # pointer_env == "fine": on a touch device every human session would
+    # also show zero mousemove-before-tap, so the signal isn't meaningful
+    # there rather than merely weaker — don't apply it at all.
+    if pointer_env == "fine" and teleport_click_ratio is not None:
+        if teleport_click_ratio >= 0.8:
+            reasons.append(f"teleport_click_ratio:{teleport_click_ratio:.2f}")
+            confidence += 0.5
+            if agent_family == "unknown":
+                agent_family = "browser-use"
+
+    # Rule 6: near-zero mousemove volume for a session with real clicks —
+    # a softer, corroborating version of rule 5 for sessions with no
+    # clicks recorded yet (teleport_click_ratio needs a click to exist).
+    if (
+        pointer_env == "fine"
+        and mouse_event_rate is not None
+        and mouse_event_rate < 0.05
+        and event_count > 1
+    ):
+        reasons.append(f"low_mouse_event_rate:{mouse_event_rate:.3f}/s")
+        confidence += 0.2
 
     confidence = min(confidence, 1.0)
     is_agent = confidence >= 0.4

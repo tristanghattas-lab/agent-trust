@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session as DBSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -76,6 +77,27 @@ app.add_middleware(OriginLoggingMiddleware)
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    _migrate_new_columns()
+
+
+def _migrate_new_columns() -> None:
+    """create_all() only creates missing tables, never alters existing
+    ones — so a new nullable column on an already-live table (like
+    sessions, which has real rows on Render's Postgres) needs adding by
+    hand. No Alembic yet for v0, so this runs the additive, idempotent
+    ALTER TABLE itself at every startup instead: ADD COLUMN IF NOT EXISTS
+    is a no-op once the column exists, so this is safe to leave in place
+    rather than removing it after the one deploy that needed it. Revisit
+    with a real migration tool once schema changes stop being this rare.
+    """
+    statements = [
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pointer_env VARCHAR",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mouse_event_rate FLOAT",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS teleport_click_ratio FLOAT",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -133,6 +155,12 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         session.age_gate_passed = event.age_gate_passed
     if event.cf_bot_category:
         session.cf_bot_category = event.cf_bot_category
+    if event.pointer_env:
+        session.pointer_env = event.pointer_env
+    if event.mouse_event_rate is not None:
+        session.mouse_event_rate = event.mouse_event_rate
+    if event.teleport_click_ratio is not None:
+        session.teleport_click_ratio = event.teleport_click_ratio
 
     if event.checkout_started and session.checkout_started_at is None:
         session.checkout_started_at = now
@@ -153,6 +181,9 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         time_to_checkout_seconds=session.time_to_checkout_seconds,
         cart_value=session.cart_value,
         cf_bot_category=session.cf_bot_category,
+        pointer_env=session.pointer_env,
+        mouse_event_rate=session.mouse_event_rate,
+        teleport_click_ratio=session.teleport_click_ratio,
     )
     session.is_agent = result.is_agent
     session.agent_family = result.agent_family

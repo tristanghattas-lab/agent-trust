@@ -73,6 +73,15 @@ class Session(Base):
     age_gate_shown: Mapped[bool] = mapped_column(Boolean, default=False)
     age_gate_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # Automation-detection signal, distinct from the classification-output
+    # fields above — this is raw pointer-behaviour input to classify.py,
+    # not its output. Only populated when pointer_env == "fine" (see
+    # tracker.js); null on touch-primary devices, where the signal isn't
+    # meaningful rather than merely absent.
+    pointer_env: Mapped[str | None] = mapped_column(String, nullable=True)
+    mouse_event_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    teleport_click_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     orders: Mapped[list["Order"]] = relationship(back_populates="session")
 
 

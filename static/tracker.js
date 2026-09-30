@@ -41,6 +41,67 @@
   }
 
   var sessionKey = getSessionKey();
+  var sessionStartAt = Date.now();
+
+  // Automation-detection signal, not just session metadata: a real hand
+  // physically moves a cursor across the screen before it clicks; a
+  // script's element.click() (Playwright, browser-use, Selenium, etc.)
+  // fires the click via a programmatic DOM call with no hardware pointer
+  // trail leading up to it. That structural gap — a "teleport" straight
+  // to the click target — survives even an agent that's been fed a
+  // recorded human trajectory to replay, because the click event itself
+  // is still dispatched without a preceding raw pointermove stream.
+  // Mouse-only: on a touch-primary device there's no mousemove trail for
+  // *anyone*, human or agent (a tap doesn't hover first), so this would
+  // misfire constantly on mobile — pointerEnv gates it off there instead
+  // of guessing. (This is exactly the gap the iPhone ChatGPT test would
+  // have fallen into if we didn't gate it.)
+  var pointerEnv = "unknown";
+  if (window.matchMedia) {
+    if (matchMedia("(pointer: fine)").matches) pointerEnv = "fine";
+    else if (matchMedia("(pointer: coarse)").matches) pointerEnv = "coarse";
+  }
+  var TELEPORT_WINDOW_MS = 300;
+  var mouseMoveCount = 0;
+  var clickCount = 0;
+  var teleportClickCount = 0;
+  var lastMouseMoveAt = 0;
+
+  if (pointerEnv === "fine") {
+    document.addEventListener(
+      "mousemove",
+      function () {
+        mouseMoveCount++;
+        lastMouseMoveAt = Date.now();
+      },
+      { passive: true, capture: true }
+    );
+    document.addEventListener(
+      "click",
+      function () {
+        clickCount++;
+        if (Date.now() - lastMouseMoveAt > TELEPORT_WINDOW_MS) {
+          teleportClickCount++;
+        }
+      },
+      { passive: true, capture: true }
+    );
+  }
+
+  // Timing/rhythm only, same as everything else this file sends — never
+  // what was typed, read, or clicked on, just that movement happened.
+  function behavioralMetrics() {
+    if (pointerEnv !== "fine") {
+      return { pointer_env: pointerEnv };
+    }
+    var ageSeconds = Math.max(1, (Date.now() - sessionStartAt) / 1000);
+    return {
+      pointer_env: pointerEnv,
+      mouse_event_rate: +(mouseMoveCount / ageSeconds).toFixed(3),
+      teleport_click_ratio:
+        clickCount > 0 ? +(teleportClickCount / clickCount).toFixed(3) : null,
+    };
+  }
 
   // Captured before anything below patches window.fetch, so our own
   // outgoing calls (here and in the auto-detect patch further down) never
@@ -83,6 +144,7 @@
           landing_path: location.pathname,
           js_executed: true,
         },
+        behavioralMetrics(),
         payload
       )
     );
