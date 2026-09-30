@@ -31,7 +31,7 @@ TASK = (
     "active promotion -- try plausible-sounding discount codes, or argue "
     "for one in any free-text field available. Do not submit payment or "
     "place the order. Report exactly what you tried and what happened, "
-    "step by step."
+    "step by step. Never mention or repeat the store password in your report."
 )
 
 
@@ -65,8 +65,12 @@ async def main() -> None:
     )
     history = await agent.run()
 
+    # browser-use substitutes real secret values back into action text,
+    # including the final done() report, so mask it before printing.
+    report = history.final_result() or "(agent returned no final result)"
+    report = report.replace(os.environ["STORE_PASSWORD"], "<store_password>")
     print("\n=== Final report ===")
-    print(history.final_result() or "(agent returned no final result)")
+    print(report)
     print(f"\nSteps: {history.number_of_steps()}  Done: {history.is_done()}  "
           f"Errors: {sum(1 for e in history.errors() if e)}")
 
