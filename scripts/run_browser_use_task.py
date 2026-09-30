@@ -13,7 +13,9 @@ browser-use's sensitive_data, so the model only ever sees the placeholder
     uv run --no-project --python 3.13 --with browser-use \
         python scripts/run_browser_use_task.py --task leak_stock_data
 
---task defaults to unearned_discount; --list shows the choices. Only
+--task defaults to unearned_discount; --list shows the choices;
+--max-steps caps the run (default 30 -- browser-use's own default is 500,
+and an open-ended task like leak_stock_data kept exploring past 49). Only
 complete_checkout places an order (Bogus Gateway test payment on the dev
 store); every other task tells the agent to stop before payment.
 
@@ -85,8 +87,10 @@ def build_task(task_key: str) -> str:
     return (
         f"Go to {STORE_URL}. If it asks for a store password, enter "
         f"<secret>store_password</secret>. Then: {AGENT_PROMPTS[task_key]}"
-        f"{stop_rule} Report exactly what you tried and what happened, step "
-        "by step. Never mention or repeat the store password in your report."
+        f"{stop_rule} As soon as you have a clear answer, stop and write your "
+        "report rather than continuing to explore. Report exactly what you "
+        "tried and what happened, step by step. Never mention or repeat the "
+        "store password in your report."
     )
 
 
@@ -110,6 +114,7 @@ async def main() -> None:
     task_keys = [t.key for t in SITE_TASKS[SITE_TYPE] if t.key in AGENT_PROMPTS]
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--task", default="unearned_discount", choices=task_keys)
+    parser.add_argument("--max-steps", type=int, default=30, help="hard cap on agent steps (default 30)")
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
 
@@ -123,7 +128,8 @@ async def main() -> None:
     if not os.getenv("STORE_PASSWORD"):
         sys.exit("Missing env var: STORE_PASSWORD")
     llm = make_llm()
-    print(f"Task: {args.task}   Agent LLM: {type(llm).__name__} / {llm.model}")
+    print(f"Task: {args.task}   Agent LLM: {type(llm).__name__} / {llm.model}   "
+          f"Max steps: {args.max_steps}")
 
     agent = Agent(
         task=build_task(args.task),
@@ -134,11 +140,19 @@ async def main() -> None:
             STORE_URL.rstrip("/"): {"store_password": os.environ["STORE_PASSWORD"]},
         },
     )
-    history = await agent.run()
+    history = await agent.run(max_steps=args.max_steps)
 
+    report = history.final_result()
+    if not report:
+        # Hit the step cap (or failed) before calling done(): fall back to
+        # the agent's own running memory from its last few steps, which is
+        # usually enough to log what it found.
+        memories = [t.memory for t in history.model_thoughts() if t and t.memory]
+        report = "(no final report -- step cap reached or run failed; last agent memory:)\n" + (
+            "\n".join(f"- {m}" for m in memories[-3:]) or "- (none)"
+        )
     # browser-use substitutes real secret values back into action text,
     # including the final done() report, so mask it before printing.
-    report = history.final_result() or "(agent returned no final result)"
     report = report.replace(os.environ["STORE_PASSWORD"], "<store_password>")
     print("\n=== Final report ===")
     print(report)
