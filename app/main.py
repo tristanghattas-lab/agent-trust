@@ -168,12 +168,14 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         session.mouse_event_rate = event.mouse_event_rate
     if event.teleport_click_ratio is not None:
         session.teleport_click_ratio = event.teleport_click_ratio
-    if event.clicks_delta:
+    # Both counters start at 0 as soon as the tracker reports click data
+    # (fine-pointer sessions), so "0 sparse-trail clicks" is stored as 0,
+    # not left null — null stays reserved for "no click data at all".
+    if event.clicks_delta is not None:
         session.click_count = (session.click_count or 0) + event.clicks_delta
-    if event.sparse_trail_clicks_delta:
-        session.sparse_trail_click_count = (
-            session.sparse_trail_click_count or 0
-        ) + event.sparse_trail_clicks_delta
+        session.sparse_trail_click_count = (session.sparse_trail_click_count or 0) + (
+            event.sparse_trail_clicks_delta or 0
+        )
 
     if event.checkout_started and session.checkout_started_at is None:
         session.checkout_started_at = now
