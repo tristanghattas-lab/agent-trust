@@ -61,17 +61,32 @@
     if (matchMedia("(pointer: fine)").matches) pointerEnv = "fine";
     else if (matchMedia("(pointer: coarse)").matches) pointerEnv = "coarse";
   }
+  //
+  // Measured against real traffic, the teleport check alone misses
+  // browser-use: it dispatches one synthetic mousemove to the target
+  // ~130ms before each click, landing inside TELEPORT_WINDOW_MS. What it
+  // can't cheaply fake is the *trail* — a hand-driven cursor emits dozens
+  // of mousemoves travelling to a target; browser-use emits exactly one.
+  // So also count "sparse-trail" clicks: ≤ SPARSE_TRAIL_MAX_MOVES moves
+  // since the previous click (or page load). Sent as deltas so the server
+  // can sum them across every page of the session.
   var TELEPORT_WINDOW_MS = 300;
+  var SPARSE_TRAIL_MAX_MOVES = 2;
   var mouseMoveCount = 0;
   var clickCount = 0;
   var teleportClickCount = 0;
+  var sparseTrailClickCount = 0;
+  var movesSinceLastClick = 0;
   var lastMouseMoveAt = 0;
+  var sentClicks = 0;
+  var sentSparseTrailClicks = 0;
 
   if (pointerEnv === "fine") {
     document.addEventListener(
       "mousemove",
       function () {
         mouseMoveCount++;
+        movesSinceLastClick++;
         lastMouseMoveAt = Date.now();
       },
       { passive: true, capture: true }
@@ -83,6 +98,10 @@
         if (Date.now() - lastMouseMoveAt > TELEPORT_WINDOW_MS) {
           teleportClickCount++;
         }
+        if (movesSinceLastClick <= SPARSE_TRAIL_MAX_MOVES) {
+          sparseTrailClickCount++;
+        }
+        movesSinceLastClick = 0;
       },
       { passive: true, capture: true }
     );
@@ -95,11 +114,17 @@
       return { pointer_env: pointerEnv };
     }
     var ageSeconds = Math.max(1, (Date.now() - sessionStartAt) / 1000);
+    var clicksDelta = clickCount - sentClicks;
+    var sparseDelta = sparseTrailClickCount - sentSparseTrailClicks;
+    sentClicks = clickCount;
+    sentSparseTrailClicks = sparseTrailClickCount;
     return {
       pointer_env: pointerEnv,
       mouse_event_rate: +(mouseMoveCount / ageSeconds).toFixed(3),
       teleport_click_ratio:
         clickCount > 0 ? +(teleportClickCount / clickCount).toFixed(3) : null,
+      clicks_delta: clicksDelta,
+      sparse_trail_clicks_delta: sparseDelta,
     };
   }
 

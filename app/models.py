@@ -81,6 +81,10 @@ class Session(Base):
     pointer_env: Mapped[str | None] = mapped_column(String, nullable=True)
     mouse_event_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     teleport_click_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Session-wide totals (summed from per-post deltas): clicks, and clicks
+    # preceded by <= 2 mousemoves since the previous click — see tracker.js.
+    click_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sparse_trail_click_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     orders: Mapped[list["Order"]] = relationship(back_populates="session")
 
@@ -95,6 +99,9 @@ class Order(Base):
     session_key: Mapped[str | None] = mapped_column(
         String, ForeignKey("sessions.session_key"), nullable=True, index=True
     )
+    # How session_key was found: "cart_attribute" (exact — the tracker's own
+    # tag), "user_agent_time" (fuzzy fallback), or null (unmatched).
+    session_match_method: Mapped[str | None] = mapped_column(String, nullable=True)
 
     order_value: Mapped[float] = mapped_column(Float)
     currency: Mapped[str] = mapped_column(String, default="AUD")

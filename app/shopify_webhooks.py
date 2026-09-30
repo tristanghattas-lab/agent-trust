@@ -7,12 +7,15 @@ pages) never executes on the checkout flow. The webhook is server-to-
 server and fires the moment an order is actually created — it's the
 real signal, not an inference from client-side timing.
 
-Session matching (order -> the session that produced it) isn't wired
-up yet: that needs tracker.js to write our session_key into the
-Shopify cart's attributes (via the AJAX Cart API, POST /cart/update.js)
-so it survives into the order as a note_attribute. Not built for v0 —
-orders land with session_key=None until that's added, which is enough
-to validate the webhook pipeline itself before adding that extra piece.
+Session matching (order -> the session that produced it), two ways:
+
+1. Exact: tracker.js writes our session_key into the Shopify cart's
+   attributes (AJAX Cart API, POST /cart/update.js), and it survives into
+   the order as a note_attribute (SESSION_ATTRIBUTE_NAME).
+2. Fuzzy fallback: "Buy it now" (dynamic checkout buttons) creates a
+   checkout that bypasses the cart, so there's no attribute to read. The
+   order payload's client_details.user_agent is then matched against
+   recently active sessions — see match_session_by_user_agent in main.py.
 """
 import hashlib
 import hmac
@@ -58,6 +61,7 @@ def parse_order_payload(payload: dict) -> OrderIn:
         currency=payload.get("currency", "AUD"),
         shipping_state=shipping_address.get("province_code"),
         session_key=session_key,
+        client_user_agent=(payload.get("client_details") or {}).get("user_agent"),
         allocation_flagged=False,  # no allocation logic on a generic dev store
     )
 

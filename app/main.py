@@ -9,7 +9,7 @@ FastAPI ingestion + query API.
 """
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,6 +28,10 @@ from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
 
+# Uvicorn only configures its own loggers; without a handler here, INFO
+# records from these app loggers fall through to Python's last-resort
+# handler, which prints WARNING and above only — silently dropping them.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
 logger = logging.getLogger("agent_trust.webhooks")
 cors_logger = logging.getLogger("agent_trust.cors")
 
@@ -94,6 +98,9 @@ def _migrate_new_columns() -> None:
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pointer_env VARCHAR",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mouse_event_rate FLOAT",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS teleport_click_ratio FLOAT",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS click_count INTEGER",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sparse_trail_click_count INTEGER",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
     ]
     with engine.begin() as conn:
         for stmt in statements:
@@ -161,6 +168,12 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         session.mouse_event_rate = event.mouse_event_rate
     if event.teleport_click_ratio is not None:
         session.teleport_click_ratio = event.teleport_click_ratio
+    if event.clicks_delta:
+        session.click_count = (session.click_count or 0) + event.clicks_delta
+    if event.sparse_trail_clicks_delta:
+        session.sparse_trail_click_count = (
+            session.sparse_trail_click_count or 0
+        ) + event.sparse_trail_clicks_delta
 
     if event.checkout_started and session.checkout_started_at is None:
         session.checkout_started_at = now
@@ -183,7 +196,8 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         cf_bot_category=session.cf_bot_category,
         pointer_env=session.pointer_env,
         mouse_event_rate=session.mouse_event_rate,
-        teleport_click_ratio=session.teleport_click_ratio,
+        click_count=session.click_count,
+        sparse_trail_click_count=session.sparse_trail_click_count,
     )
     session.is_agent = result.is_agent
     session.agent_family = result.agent_family
@@ -199,6 +213,38 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         "agent_family": session.agent_family,
         "confidence": session.classification_confidence,
     }
+
+
+# How far back from the order's arrival a session's last activity may be
+# for the user-agent fallback to consider it. Long enough to cover filling
+# in Shopify's checkout (where tracker.js doesn't run, so last_seen stops
+# updating), short enough that a same-UA visitor from hours ago can't match.
+UA_MATCH_WINDOW = timedelta(minutes=30)
+
+
+def match_session_by_user_agent(
+    db: DBSession, user_agent: str | None, now: datetime
+) -> str | None:
+    """Fuzzy order -> session match for orders with no cart-attribute tag.
+
+    Only returns a match when exactly one session with this exact user
+    agent was active in the window — two candidates means we can't tell
+    them apart, and a wrong join is worse than no join for the outcome
+    labels this feeds. Reliable at test-store volume; expect it to find
+    fewer unique matches as real traffic (many identical Chrome UAs) grows.
+    """
+    if not user_agent:
+        return None
+    candidates = (
+        db.query(SessionModel.session_key)
+        .filter(
+            SessionModel.user_agent == user_agent,
+            SessionModel.last_seen >= now - UA_MATCH_WINDOW,
+        )
+        .limit(2)
+        .all()
+    )
+    return candidates[0][0] if len(candidates) == 1 else None
 
 
 @app.post("/webhooks/shopify/orders")
@@ -231,9 +277,22 @@ async def shopify_order_webhook(
         # delivery as a no-op rather than erroring or double-counting.
         return {"status": "already_recorded", "order_id": existing.id}
 
+    session_key = order_in.session_key
+    match_method = "cart_attribute" if session_key else None
+    if session_key is None:
+        session_key = match_session_by_user_agent(
+            db, order_in.client_user_agent, datetime.now(timezone.utc)
+        )
+        if session_key is not None:
+            match_method = "user_agent_time"
+    logger.info(
+        "Order %s session match: %s", order_in.shopify_order_id, match_method or "none"
+    )
+
     order = Order(
         shopify_order_id=order_in.shopify_order_id,
-        session_key=order_in.session_key,
+        session_key=session_key,
+        session_match_method=match_method,
         order_value=order_in.order_value,
         currency=order_in.currency,
         shipping_state=order_in.shipping_state,
@@ -243,7 +302,12 @@ async def shopify_order_webhook(
     db.commit()
     db.refresh(order)
 
-    return {"status": "recorded", "order_id": order.id, "session_matched": order.session_key is not None}
+    return {
+        "status": "recorded",
+        "order_id": order.id,
+        "session_matched": order.session_key is not None,
+        "session_match_method": match_method,
+    }
 
 
 @app.post("/threat-runs")

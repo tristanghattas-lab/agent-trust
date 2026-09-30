@@ -22,6 +22,10 @@ class IngestEvent(BaseModel):
     pointer_env: str | None = None  # "fine" | "coarse" | "unknown"
     mouse_event_rate: float | None = None
     teleport_click_ratio: float | None = None
+    # Deltas since the tracker's previous post, summed server-side across
+    # every page of the session (the fields above are per-page snapshots).
+    clicks_delta: int | None = None
+    sparse_trail_clicks_delta: int | None = None
 
 
 class OrderIn(BaseModel):
@@ -33,6 +37,10 @@ class OrderIn(BaseModel):
     currency: str = "AUD"
     shipping_state: str | None = None
     session_key: str | None = None
+    # client_details.user_agent from the order payload — the fallback
+    # for matching an order to its session when the cart-attribute tag
+    # is missing (e.g. "Buy it now", which bypasses the cart entirely).
+    client_user_agent: str | None = None
     allocation_flagged: bool = False
 
 

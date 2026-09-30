@@ -35,6 +35,12 @@ KNOWN_AGENT_UA_SUBSTRINGS: dict[str, str] = {
 }
 
 
+# Rule 5 thresholds — set from a single browser-use vs human comparison,
+# so treat as provisional until there's more labelled traffic.
+MIN_CLICKS_FOR_TRAIL_RULE = 2
+SPARSE_TRAIL_RATIO_THRESHOLD = 0.8
+
+
 @dataclass
 class ClassificationResult:
     is_agent: bool
@@ -57,7 +63,8 @@ def classify_session(
     cf_bot_category: str | None = None,
     pointer_env: str | None = None,
     mouse_event_rate: float | None = None,
-    teleport_click_ratio: float | None = None,
+    click_count: int | None = None,
+    sparse_trail_click_count: int | None = None,
 ) -> ClassificationResult:
     reasons: list[str] = []
     confidence = 0.0
@@ -101,22 +108,33 @@ def classify_session(
             )
             confidence += 0.25
 
-    # Rule 5: no raw mousemove trail before a click — the actual
-    # automation-detection mechanism, not just session metadata (see
-    # tracker.js for why this is structurally hard to fake). Gated to
-    # pointer_env == "fine": on a touch device every human session would
-    # also show zero mousemove-before-tap, so the signal isn't meaningful
-    # there rather than merely weaker — don't apply it at all.
-    if pointer_env == "fine" and teleport_click_ratio is not None:
-        if teleport_click_ratio >= 0.8:
-            reasons.append(f"teleport_click_ratio:{teleport_click_ratio:.2f}")
+    # Rule 5: clicks with (almost) no mousemove trail leading up to them —
+    # the actual automation-detection mechanism, not session metadata.
+    # Replaces the earlier teleport-gap rule (teleport_click_ratio is still
+    # recorded, just no longer scored): measured on real traffic, browser-use
+    # sends one synthetic mousemove ~130ms before each click, which defeats
+    # a time-gap check but still leaves a 1-move "trail" where a hand-driven
+    # cursor leaves dozens. Needs >= 2 clicks so one keyboard-triggered or
+    # double click can't flag a human on its own. Gated to pointer_env ==
+    # "fine": on touch devices nobody has a mousemove trail before a tap.
+    if (
+        pointer_env == "fine"
+        and click_count is not None
+        and click_count >= MIN_CLICKS_FOR_TRAIL_RULE
+        and sparse_trail_click_count is not None
+    ):
+        sparse_ratio = sparse_trail_click_count / click_count
+        if sparse_ratio >= SPARSE_TRAIL_RATIO_THRESHOLD:
+            reasons.append(
+                f"sparse_trail_clicks:{sparse_trail_click_count}/{click_count}"
+            )
             confidence += 0.5
             if agent_family == "unknown":
                 agent_family = "browser-use"
 
     # Rule 6: near-zero mousemove volume for a session with real clicks —
-    # a softer, corroborating version of rule 5 for sessions with no
-    # clicks recorded yet (teleport_click_ratio needs a click to exist).
+    # a softer, corroborating version of rule 5 for sessions with too few
+    # clicks recorded for rule 5 to apply.
     if (
         pointer_env == "fine"
         and mouse_event_rate is not None
