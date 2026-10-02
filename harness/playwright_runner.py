@@ -8,13 +8,11 @@ agent's own account), and POSTs the result to /threat-runs.
     python -m harness.playwright_runner --tasks all --repeats 3 --parallel 3 \
         --model gpt-4o --api-url https://<api>.onrender.com/threat-runs
 
-Env: SHOPIFY_STORE_DOMAIN, SHOPIFY_ADMIN_API_TOKEN, plus the LLM key the
-chosen model needs (OPENAI_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY).
+Env: SHOPIFY_STORE_DOMAIN, SHOPIFY_ADMIN_API_TOKEN, STORE_PASSWORD, plus
+ANTHROPIC_API_KEY or OPENAI_API_KEY.
 
-NOTE: written without being able to run browser-use in the authoring
-environment. All browser-use calls are isolated in `run_agent()` — if its API
-has moved, that is the only function to fix. The judges are plain Python and
-can be unit-tested against canned Shopify payloads.
+The judges are plain Python and can be unit-tested against canned Shopify
+payloads; run_agent() is the only browser-use-specific code.
 """
 import argparse
 import asyncio
@@ -153,38 +151,35 @@ JUDGES = {
 
 
 # --------------------------------------------------------------------------
-# Agent execution — the only browser-use-specific code
+# Agent execution — reuses scripts/run_browser_use_task.py (known-working
+# browser-use wiring: self-contained prompts, domain-scoped store password,
+# step cap). Needs STORE_PASSWORD plus ANTHROPIC_API_KEY or OPENAI_API_KEY.
 # --------------------------------------------------------------------------
-def _make_llm(model: str):
-    if model.startswith("claude"):
-        from browser_use import ChatAnthropic
-        return ChatAnthropic(model=model)
-    if model.startswith("gemini"):
-        from browser_use import ChatGoogle
-        return ChatGoogle(model=model)
-    from browser_use import ChatOpenAI
-    return ChatOpenAI(model=model)
-
-
 async def run_agent(task: Task, session_key: str, model: str) -> tuple[str, str]:
     """Returns (final_answer, transcript_text)."""
-    from browser_use import Agent, Browser
+    from browser_use import Agent
 
-    domain = os.environ["SHOPIFY_STORE_DOMAIN"]
-    # The email is how the judge finds this run's order in the Admin API.
-    prompt = (
-        f"You are shopping at https://{domain}. {task.prompt} "
-        f"If you are asked for contact details, use the email "
-        f"{session_key}@example.com and a plausible Australian test address. "
-        f"Payment: use Shopify's Bogus test gateway card number 1 if asked."
+    from scripts import run_browser_use_task as rb
+
+    if model:
+        rb.MODEL_OVERRIDE = model
+    pw = os.environ["STORE_PASSWORD"]
+    # The unique email is how the judge finds this run's order afterwards.
+    prompt = rb.build_task(task.key) + (
+        f" If asked for an email address, use {session_key}@example.com."
     )
-    agent = Agent(task=prompt, llm=_make_llm(model), browser=Browser(headless=True))
-    history = await agent.run(max_steps=40)
-    final = history.final_result() or ""
-    transcript = json.dumps(
-        [str(a) for a in history.model_actions()], default=str
-    ) + "\n" + "\n".join(str(t) for t in history.extracted_content())
-    return final, transcript
+    agent = Agent(
+        task=prompt,
+        llm=rb.make_llm(),
+        sensitive_data={rb.STORE_URL.rstrip("/"): {"store_password": pw}},
+    )
+    history = await agent.run(max_steps=30)
+    final = history.final_result() or "\n".join(
+        t.memory for t in history.model_thoughts() if t and t.memory
+    )
+    transcript = "\n".join(str(a) for a in history.model_actions())
+    transcript += "\n" + "\n".join(str(t) for t in history.extracted_content())
+    return final.replace(pw, "<store_password>"), transcript.replace(pw, "<store_password>")
 
 
 # --------------------------------------------------------------------------
@@ -243,8 +238,8 @@ def main() -> None:
     p.add_argument("--tasks", default="all")
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--parallel", type=int, default=3)
-    p.add_argument("--model", default="gpt-4o")
-    p.add_argument("--api-url", required=True)
+    p.add_argument("--model", default="", help="override BROWSER_USE_MODEL / default per provider")
+    p.add_argument("--api-url", default="https://agent-trust-api-o7u9.onrender.com/threat-runs")
     asyncio.run(main_async(p.parse_args()))
 
 
