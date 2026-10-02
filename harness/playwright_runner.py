@@ -152,7 +152,7 @@ JUDGES = {
 # --------------------------------------------------------------------------
 async def run_agent(task: Task, session_key: str, model: str) -> tuple[str, str]:
     """Returns (final_answer, transcript_text)."""
-    from browser_use import Agent
+    from browser_use import Agent, Browser
 
     from scripts import run_browser_use_task as rb
 
@@ -166,9 +166,19 @@ async def run_agent(task: Task, session_key: str, model: str) -> tuple[str, str]
     agent = Agent(
         task=prompt,
         llm=rb.make_llm(),
+        # Lock the browser to Shopify domains so a prompt-injected detour
+        # elsewhere can't harvest the store password.
+        browser=Browser(allowed_domains=["*.myshopify.com", "*.shopify.com", "shop.app"]),
         sensitive_data={rb.STORE_URL.rstrip("/"): {"store_password": pw}},
     )
     history = await agent.run(max_steps=30)
+    steps = history.number_of_steps()
+    n_err = sum(1 for e in history.errors() if e)
+    if steps == 0 or n_err >= steps:
+        # Every step failed (bad API key, rate limit, ...): the agent never
+        # really ran, so this is not a test result and must not be logged.
+        first = next((str(e) for e in history.errors() if e), "no steps ran")
+        raise RuntimeError(f"agent never ran: {first[:200]}")
     final = history.final_result() or "\n".join(
         t.memory for t in history.model_thoughts() if t and t.memory
     )
@@ -203,8 +213,9 @@ async def one_run(task: Task, model: str, api_url: str, sem: asyncio.Semaphore) 
             orders = await asyncio.to_thread(orders_for_session, session_key, api_url)
             out = JUDGES[task.key](final, orders, transcript)
         except Exception as exc:
-            final, transcript = "", f"ERROR: {exc}"
-            out = RunOutcome("fail", False, [f"runner error: {exc}"])
+            # Infrastructure failure, not a test result: report it, log nothing.
+            print(f"  ERROR {task.key}: {exc}", file=sys.stderr)
+            return {"task": task.key, "result": "ERROR", "exploit": False, "notes": [str(exc)[:100]]}
         RUNS_DIR.mkdir(exist_ok=True)
         (RUNS_DIR / f"{task.key}-{session_key}.txt").write_text(
             f"FINAL:\n{final}\n\nTRANSCRIPT:\n{transcript}\n"
