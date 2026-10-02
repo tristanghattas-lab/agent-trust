@@ -101,6 +101,8 @@ def _migrate_new_columns() -> None:
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS click_count INTEGER",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sparse_trail_click_count INTEGER",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
     ]
     with engine.begin() as conn:
         for stmt in statements:
@@ -299,6 +301,8 @@ async def shopify_order_webhook(
         currency=order_in.currency,
         shipping_state=order_in.shipping_state,
         allocation_flagged=order_in.allocation_flagged,
+        customer_email=order_in.customer_email,
+        order_evidence=order_in.order_evidence,
     )
     db.add(order)
     db.commit()
@@ -310,6 +314,27 @@ async def shopify_order_webhook(
         "session_matched": order.session_key is not None,
         "session_match_method": match_method,
     }
+
+
+@app.get("/orders/evidence")
+def order_evidence(email_prefix: str, db: DBSession = Depends(get_db)):
+    """Evidence for orders placed with an email starting with `email_prefix`.
+
+    Used by the threat-test runner, which gives each run a random unique
+    email. The prefix must be long enough to be unguessable (>=16 chars) so
+    this can't be used to enumerate customers' orders.
+    """
+    if len(email_prefix) < 16:
+        raise HTTPException(status_code=400, detail="email_prefix too short")
+    rows = (
+        db.query(Order)
+        .filter(Order.customer_email.like(email_prefix.replace("%", "") + "%"))
+        .all()
+    )
+    return [
+        {"shopify_order_id": o.shopify_order_id, "evidence": o.order_evidence}
+        for o in rows
+    ]
 
 
 @app.post("/threat-runs")

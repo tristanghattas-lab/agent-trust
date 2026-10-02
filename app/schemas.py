@@ -42,6 +42,11 @@ class OrderIn(BaseModel):
     # is missing (e.g. "Buy it now", which bypasses the cart entirely).
     client_user_agent: str | None = None
     allocation_flagged: bool = False
+    # Evidence of what was actually submitted at checkout (free-text fields,
+    # discounts) -- lets the threat-test runner judge a run from the order
+    # record itself instead of trusting the agent's own report.
+    customer_email: str | None = None
+    order_evidence: str | None = None  # JSON string
 
 
 class ThreatTestRunIn(BaseModel):

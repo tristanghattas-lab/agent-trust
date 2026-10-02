@@ -3,13 +3,13 @@ Automated threat-test runner.
 
 Runs the tasks in harness/tasks.py through a browser-use agent against the
 Shopify test store, judges each run from store-side evidence (not just the
-agent's own account), and POSTs the result to /threat-runs.
+agent's own account), and POSTs the result to /threat-runs. Test orders are left in place.
 
     python -m harness.playwright_runner --tasks all --repeats 3 --parallel 3 \
         --model gpt-4o --api-url https://<api>.onrender.com/threat-runs
 
-Env: SHOPIFY_STORE_DOMAIN, SHOPIFY_ADMIN_API_TOKEN, STORE_PASSWORD, plus
-ANTHROPIC_API_KEY or OPENAI_API_KEY.
+Env: STORE_PASSWORD, plus ANTHROPIC_API_KEY or OPENAI_API_KEY. No Shopify
+token needed: order evidence comes from the order webhook via our own API.
 
 The judges are plain Python and can be unit-tested against canned Shopify
 payloads; run_agent() is the only browser-use-specific code.
@@ -43,34 +43,29 @@ class RunOutcome:
 
 
 # --------------------------------------------------------------------------
-# Shopify Admin API (store-side evidence)
+# Store-side evidence: the order webhook stores each order's free-text fields
+# and discounts; read them back from our own API (no Shopify Admin token).
 # --------------------------------------------------------------------------
-def _admin(path: str, method: str = "GET", **kw):
-    domain = os.environ["SHOPIFY_STORE_DOMAIN"]
-    token = os.environ["SHOPIFY_ADMIN_API_TOKEN"]
-    url = f"https://{domain}/admin/api/{API_VERSION}/{path}"
-    r = requests.request(
-        method, url, headers={"X-Shopify-Access-Token": token}, timeout=20, **kw
+def orders_for_session(session_key: str, api_url: str) -> list[dict]:
+    """Orders placed with this run's unique email (see run_agent's prompt),
+    normalised to the Shopify-order-like shape the judges expect."""
+    base = api_url.rsplit("/threat-runs", 1)[0]
+    r = requests.get(
+        f"{base}/orders/evidence", params={"email_prefix": session_key}, timeout=20
     )
     r.raise_for_status()
-    return r.json() if r.content else {}
-
-
-def orders_for_session(session_key: str) -> list[dict]:
-    """Orders placed with this run's unique email (see run_agent's prompt)."""
-    data = _admin("orders.json?status=any&limit=100")
-    return [
-        o for o in data.get("orders", [])
-        if session_key in (o.get("email") or o.get("contact_email") or "")
-    ]
-
-
-def cleanup_orders(orders: list[dict]) -> None:
-    for o in orders:
-        try:
-            _admin(f"orders/{o['id']}/cancel.json", "POST", json={})
-        except Exception as exc:  # best effort; test store only
-            print(f"  cleanup warn: order {o['id']}: {exc}", file=sys.stderr)
+    out = []
+    for row in r.json():
+        ev = json.loads(row["evidence"] or "{}")
+        out.append(
+            {
+                "id": row["shopify_order_id"],
+                "shipping_address": ev.get("shipping_address") or {},
+                "note": ev.get("note"),
+                "total_discounts": ev.get("total_discounts") or "0",
+            }
+        )
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -205,7 +200,7 @@ async def one_run(task: Task, model: str, api_url: str, sem: asyncio.Semaphore) 
         try:
             final, transcript = await run_agent(task, session_key, model)
             await asyncio.sleep(5)  # let the order webhook / API settle
-            orders = await asyncio.to_thread(orders_for_session, session_key)
+            orders = await asyncio.to_thread(orders_for_session, session_key, api_url)
             out = JUDGES[task.key](final, orders, transcript)
         except Exception as exc:
             final, transcript = "", f"ERROR: {exc}"
@@ -215,7 +210,6 @@ async def one_run(task: Task, model: str, api_url: str, sem: asyncio.Semaphore) 
             f"FINAL:\n{final}\n\nTRANSCRIPT:\n{transcript}\n"
         )
         await asyncio.to_thread(post_result, api_url, task, model, out)
-        await asyncio.to_thread(cleanup_orders, orders)
         return {"task": task.key, "result": out.result, "exploit": out.exploit_found, "notes": out.notes}
 
 

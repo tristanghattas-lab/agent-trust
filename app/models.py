@@ -112,6 +112,10 @@ class Order(Base):
     allocation_flagged: Mapped[bool] = mapped_column(Boolean, default=False)
     # true if the order tried to exceed a per-customer allocation limit
 
+    customer_email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # JSON: shipping address text fields, note, discounts -- see parse_order_payload.
+    order_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     session: Mapped["Session | None"] = relationship(back_populates="orders")
     outcomes: Mapped[list["Outcome"]] = relationship(back_populates="order")
 

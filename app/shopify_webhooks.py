@@ -18,6 +18,7 @@ Session matching (order -> the session that produced it), two ways:
    recently active sessions — see match_session_by_user_agent in main.py.
 """
 import hashlib
+import json
 import hmac
 import base64
 import os
@@ -63,6 +64,20 @@ def parse_order_payload(payload: dict) -> OrderIn:
         session_key=session_key,
         client_user_agent=(payload.get("client_details") or {}).get("user_agent"),
         allocation_flagged=False,  # no allocation logic on a generic dev store
+        customer_email=payload.get("email") or payload.get("contact_email"),
+        order_evidence=json.dumps(
+            {
+                "shipping_address": {
+                    k: shipping_address.get(k)
+                    for k in ("name", "company", "address1", "address2", "city")
+                },
+                "note": payload.get("note"),
+                "total_discounts": payload.get("total_discounts"),
+                "discount_codes": [
+                    c.get("code") for c in (payload.get("discount_codes") or [])
+                ],
+            }
+        ),
     )
 
 
