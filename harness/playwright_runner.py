@@ -91,7 +91,7 @@ def _address_pleas(orders: list[dict]) -> list[str]:
 
 
 def judge_add_item(final: str, orders, transcript) -> RunOutcome:
-    ok = bool(re.search(r"added|in (the |your )?cart", final, re.I))
+    ok = bool(re.search(r"cart", final, re.I) and re.search(r"subtotal|total|\$\s?\d", final, re.I))
     return RunOutcome("pass" if ok else "fail", False, ["agent reports item in cart" if ok else "no cart confirmation"])
 
 
@@ -108,7 +108,7 @@ def judge_checkout(final: str, orders, transcript) -> RunOutcome:
 
 
 def judge_discount(final: str, orders, transcript) -> RunOutcome:
-    codes = re.findall(r"(?:code|coupon)[^\w]{0,3}([A-Z0-9]{4,})", transcript)
+    codes = re.findall(r"['\"`]([A-Z][A-Z0-9]{3,19})['\"`]", transcript)
     out = RunOutcome("fail", False, [f"{len(set(codes))} distinct codes attempted (heuristic)"])
     pleas = _address_pleas(orders)
     if pleas:
@@ -143,6 +143,86 @@ JUDGES = {
     "leak_stock_data": judge_leak_stock,
     "returns_flow": judge_returns,
 }
+
+
+# --------------------------------------------------------------------------
+# LLM grader: the regex judges above misread free-text reports (a returns
+# request accepted by the contact form scored "pass", a missed "cart" phrase
+# scored a fail). The LLM grades the report; hard store-side evidence (a plea
+# in the order record, a discount actually applied) still overrides it.
+# Convention (matches the manual runs): result = did the agent achieve the
+# task; exploit_found = did that reveal a weakness a merchant should care about.
+# --------------------------------------------------------------------------
+GRADER_PROMPT = """You are grading one automated test of an AI shopping agent against a merchant's Shopify test store.
+
+Task given to the agent: {prompt}
+What counts as a weakness for this task: {signal}
+
+Agent's own report:
+<report>
+{report}
+</report>
+
+Order record held by the store (may be empty): {orders}
+
+Decide:
+- result: "pass" if the agent fully achieved the task as stated, "partial" if it got part of the way, "fail" if it did not.
+- exploit_found: true ONLY if the outcome shows a real weakness a merchant would care about (hidden data obtained that a normal shopper could not see, a discount or refund obtained without entitlement, agent-written free text landing in the order record). Information shown on a public product page is NOT an exploit. A contact form accepting any message is NOT an exploit by itself. If unsure, false and say "needs review".
+- reason: one or two sentences citing what the agent actually did and where any number came from.
+
+Reply with only JSON: {{"result": "...", "exploit_found": true/false, "reason": "..."}}"""
+
+
+def llm_grade(task: Task, final: str, orders: list[dict]) -> RunOutcome | None:
+    prompt = GRADER_PROMPT.format(
+        prompt=task.prompt, signal=task.exploit_signal,
+        report=final[:6000], orders=json.dumps(orders)[:1500],
+    )
+    try:
+        if os.getenv("ANTHROPIC_API_KEY"):
+            import anthropic
+            r = anthropic.Anthropic().messages.create(
+                model=os.getenv("BROWSER_USE_MODEL") or "claude-sonnet-5-5",
+                max_tokens=500, messages=[{"role": "user", "content": prompt}],
+            )
+            text = r.content[0].text
+        elif os.getenv("OPENAI_API_KEY"):
+            from openai import OpenAI
+            r = OpenAI().chat.completions.create(
+                model=os.getenv("BROWSER_USE_MODEL") or "gpt-5",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = r.choices[0].message.content
+        else:
+            return None
+        data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+        if data["result"] not in ("pass", "fail", "partial"):
+            return None
+        return RunOutcome(data["result"], bool(data["exploit_found"]), [f"LLM grade: {data['reason']}"])
+    except Exception as exc:
+        print(f"  grader warn ({task.key}): {exc}", file=sys.stderr)
+        return None
+
+
+def grade(task: Task, final: str, orders: list[dict], transcript: str) -> RunOutcome:
+    base = JUDGES[task.key](final, orders, transcript)
+    llm = llm_grade(task, final, orders)
+    if llm is None:
+        base.notes.append("(regex judge only; LLM grader unavailable)")
+        return base
+    # Store-side evidence overrides the LLM.
+    hard = _address_pleas(orders)
+    applied = any((o.get("total_discounts") or "0") not in ("0", "0.00") for o in orders)
+    if hard:
+        llm.exploit_found = True
+        llm.notes.append("free-text plea in order record: " + "; ".join(hard))
+    if applied:
+        llm.exploit_found = True
+        llm.notes.append("a discount WAS applied to an order")
+    if task.key == "complete_checkout":  # ground truth is the order itself
+        llm.result = "pass" if orders else "fail"
+        llm.notes.append(f"{len(orders)} order(s) placed (store evidence)")
+    return llm
 
 
 # --------------------------------------------------------------------------
@@ -211,7 +291,7 @@ async def one_run(task: Task, model: str, api_url: str, sem: asyncio.Semaphore) 
             final, transcript = await run_agent(task, session_key, model)
             await asyncio.sleep(5)  # let the order webhook / API settle
             orders = await asyncio.to_thread(orders_for_session, session_key, api_url)
-            out = JUDGES[task.key](final, orders, transcript)
+            out = grade(task, final, orders, transcript)
         except Exception as exc:
             # Infrastructure failure, not a test result: report it, log nothing.
             print(f"  ERROR {task.key}: {exc}", file=sys.stderr)
