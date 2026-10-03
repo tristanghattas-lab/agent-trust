@@ -22,6 +22,24 @@ Two modes, one database:
 
 Both feed `dashboard/app.py`, a single Streamlit dashboard.
 
+## Dashboard and test data
+
+The dashboard has five views: Overview, AI referrals, Agent sessions,
+Orders & outcomes, and Threat testing. The sidebar's **Data source** switch
+picks between:
+
+- **Live**: the four tables in Postgres.
+- **Demo**: a synthetic dataset built in memory by `dashboard/demo_data.py`.
+  It is never written to the database, so it can't mix with real traffic.
+  Agent behaviour is modelled on the icelabs test runs and every session is
+  scored by the real classifier; volumes and rates are invented. The threat
+  testing view shows the real icelabs findings (or live runs, if the DB has any).
+- **Auto** (default): live when the tracker has recorded sessions, otherwise demo.
+
+Demo mode shows a "TEST DATA" banner on every view. Keep it that way: the
+dashboard is shown to merchants, and synthetic numbers must never pass as
+a real store's traffic.
+
 ## Quickstart
 
 ```bash
