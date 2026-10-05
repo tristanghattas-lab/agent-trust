@@ -60,6 +60,19 @@ class ClassificationResult:
         return ",".join(self.reasons)
 
 
+def classify_model(s) -> "ClassificationResult":
+    """Classify a stored Session row (tracker or edge) from all its fields."""
+    return classify_session(
+        user_agent=s.user_agent, js_executed=bool(s.js_executed), event_count=s.event_count or 0,
+        time_to_checkout_seconds=s.time_to_checkout_seconds, cart_value=s.cart_value,
+        cf_bot_category=s.cf_bot_category, pointer_env=s.pointer_env,
+        mouse_event_rate=s.mouse_event_rate, click_count=s.click_count,
+        sparse_trail_click_count=s.sparse_trail_click_count, automation_tells=s.automation_tells,
+        input_count=s.input_count, keyless_input_count=s.keyless_input_count,
+        keydown_count=s.keydown_count, edge_signals=s.edge_signals,
+    )
+
+
 def classify_session(
     *,
     user_agent: str | None,
@@ -193,6 +206,11 @@ def classify_session(
             confidence += 0.6
             if agent_family == "unknown":
                 agent_family = SIGNED_AGENT_FAMILIES.get(val, "signed-agent")
+        elif kind == "verified_bot":
+            # Cloudflare's verified-bot category (request.cf.verifiedBotCategory,
+            # free plan). Verified by Cloudflare, so stronger than a bare header.
+            reasons.append(f"cf_verified:{val}")
+            confidence += 0.6
         elif kind == "http_library":
             reasons.append(f"http_library:{val}")
             confidence += 0.5

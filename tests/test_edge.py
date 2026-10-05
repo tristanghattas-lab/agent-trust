@@ -121,3 +121,42 @@ def test_edge_key_endpoint_needs_api_key(client):
     r = client.get("/edge/key", params={"shop": SHOP}, headers=AUTH)
     assert r.status_code == 200
     assert r.json()["edge_key"] == edge_key(SHOP)
+
+
+def test_signature_names_the_agent_behind_a_flagged_browser_session(client):
+    """Tonight's case: the tracker flags a browser session on behaviour; the
+    Worker sees ChatGPT's Web Bot Auth signature and Cloudflare's verified
+    category on the same browser (via the _at_sid cookie). The evidence
+    joins that session and names the agent; no separate edge session."""
+    shop = "join-store.myshopify.com"
+    chrome = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/129.0 Safari/537.36"
+    client.post("/ingest", json={
+        "session_key": "s_join_1", "shop": shop, "event_count": 4, "user_agent": chrome,
+        "pointer_env": "fine", "mouse_event_rate": 0.0, "teleport_click_ratio": 1.0,
+        "clicks_delta": 3, "sparse_trail_clicks_delta": 3})
+    auth = {"Authorization": f"Bearer {KEY}"}
+    before = {r["session_key"]: r for r in
+              client.get(f"/metrics/sessions?shop={shop}&days=7", headers=auth).json()["sessions"]}
+    assert before["s_join_1"]["agent"] == "Undeclared (behavioural)"
+
+    r = post(client, [rec("/products/x", chrome, ip="ipj", sec_fetch_mode="navigate", accept_language=True,
+                          signature_agent='"https://chatgpt.com"', signed=True,
+                          verified_category="AI Assistant", tracker_session="s_join_1")], shop=shop)
+    assert r.json() == {"stored": 1, "skipped": 0}
+
+    rows = client.get(f"/metrics/sessions?shop={shop}&days=7", headers=auth).json()["sessions"]
+    assert len(rows) == 1  # joined, not a second session
+    s = rows[0]
+    assert s["agent"] == "ChatGPT agent (verified)"
+    assert s["class"] == "assistant"
+    detail = client.get(f"/metrics/sessions/s_join_1?shop={shop}", headers=auth).json()
+    text = " ".join(x["text"] for x in detail["reasons"])
+    assert "Cloudflare verified" in text and "Signed its requests" in text and "no mouse" in text.lower()
+
+
+def test_unknown_tracker_cookie_falls_back_to_edge_session(client):
+    shop = "join-store-2.myshopify.com"
+    r = post(client, [rec("/agents.md", "Mozilla/5.0 Claude-User/1.0", tracker_session="s_nope")], shop=shop)
+    assert r.json()["stored"] == 1
+    rows = client.get(f"/metrics/sessions?shop={shop}&days=7", headers={"Authorization": f"Bearer {KEY}"}).json()["sessions"]
+    assert rows and rows[0]["session_key"].startswith("edge_")

@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
 from app.analytics import HTTP_LIBRARIES, agent_file
-from app.classify import KNOWN_AGENT_UA_SUBSTRINGS, classify_session
+from app.classify import KNOWN_AGENT_UA_SUBSTRINGS, classify_model, classify_session
 from app.db import get_db
 from app.metrics_api import require_api_key
 from app.models import Session as SessionModel
@@ -84,6 +84,12 @@ class EdgeRecord(BaseModel):
     country: str | None = None
     bot_score: int | None = None              # Cloudflare Bot Management, if the zone has it
     verified_bot: bool | None = None
+    # request.cf.verifiedBotCategory: Cloudflare's verified-bot category
+    # ("AI Assistant", "AI Crawler" ...). Available on every plan.
+    verified_category: str | None = Field(default=None, max_length=64)
+    # The tracker's session key, from its first-party _at_sid cookie. Lets
+    # request-level evidence join the browser session it belongs to.
+    tracker_session: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class EdgeBatch(BaseModel):
@@ -97,6 +103,8 @@ def signals_for(r: EdgeRecord) -> set[str]:
     if r.signed or r.signature_agent:
         domain = _signature_domain(r.signature_agent) or "unknown"
         out.add(f"signed_agent:{domain}")
+    if r.verified_category:
+        out.add("verified_bot:" + re.sub(r"[^a-z0-9]+", "-", r.verified_category.lower()).strip("-"))
     lib = next((lib for lib in HTTP_LIBRARIES if lib in ua), None)
     if lib:
         out.add(f"http_library:{lib.strip('/')}")
@@ -123,10 +131,42 @@ def is_browser_like(r: EdgeRecord) -> bool:
     )
 
 
+def _merge_into_tracker_session(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel | None:
+    """A request from a browser the tracker already knows (its _at_sid
+    cookie): add the edge evidence to that session instead of starting a
+    separate edge session. This is how a Web Bot Auth signature or a
+    Cloudflare verified-bot category names the agent behind a browser
+    session that the tracker flagged on behaviour alone."""
+    if not r.tracker_session:
+        return None
+    s = (db.query(SessionModel)
+         .filter(SessionModel.session_key == r.tracker_session, SessionModel.shop_domain == shop,
+                 SessionModel.js_executed.is_(True))
+         .one_or_none())
+    if s is None:
+        return None
+    sig = set(filter(None, (s.edge_signals or "").split(","))) | signals_for(r)
+    s.edge_signals = ",".join(sorted(sig)) or None
+    paths = json.loads(s.edge_paths) if s.edge_paths else []
+    if r.path not in paths and len(paths) < MAX_PATHS_PER_SESSION:
+        paths.append(r.path)
+    s.edge_paths = json.dumps(paths)
+    result = classify_model(s)
+    s.is_agent = result.is_agent
+    s.agent_family = result.agent_family
+    s.classification_confidence = result.confidence
+    s.classification_reasons = result.reasons_csv
+    return s
+
+
 def apply_record(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel:
-    """Add one request to its session: the same store, hashed IP and user
-    agent, with the previous request less than 30 minutes earlier (an
-    inactivity timeout, so sessions don't split at fixed clock boundaries)."""
+    """Add one request to its session. A request from a browser the tracker
+    knows joins that session; otherwise requests group by store, hashed IP
+    and user agent, with the previous request less than 30 minutes earlier
+    (an inactivity timeout, so sessions don't split at fixed boundaries)."""
+    merged = _merge_into_tracker_session(db, shop, r)
+    if merged is not None:
+        return merged
     seen_at = datetime.fromtimestamp(r.ts / 1000, tz=timezone.utc)
     s = (
         db.query(SessionModel)

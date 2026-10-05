@@ -78,6 +78,14 @@
   }
 
   var sessionKey = getSessionKey();
+  // Same random key as a first-party cookie, so the store's edge Worker can
+  // attach request-level evidence (Web Bot Auth signatures, Cloudflare's
+  // verified-bot category) to this browser session. No personal data.
+  try {
+    document.cookie = "_at_sid=" + sessionKey + "; path=/; max-age=1800; SameSite=Lax; Secure";
+  } catch (e) {
+    /* ignore */
+  }
   var sessionStartAt = Date.now();
 
   // Automation-detection signal, not just session metadata: a real hand

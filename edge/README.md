@@ -63,6 +63,12 @@ and scraper classes appear, and "What agents read" fills in.
 
 ## Notes
 
+- The tracker mirrors its random session key into a first-party `_at_sid`
+  cookie. The Worker reads only that cookie, so a Web Bot Auth signature or
+  Cloudflare's verified-bot category (`request.cf.verifiedBotCategory`, every
+  plan) joins the browser session the tracker flagged, naming the agent
+  ("ChatGPT agent (verified)").
+
 - Signatures are recorded, not cryptographically verified. A signed
   request is treated as a strong agent signal, not proof of identity.
   Verifying Web Bot Auth signatures against each agent's published keys is

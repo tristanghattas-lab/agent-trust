@@ -61,6 +61,8 @@ export function forwardReason(request) {
   const h = request.headers;
   const ua = (h.get("user-agent") || "").toLowerCase();
   if (isAgentFile) return "agent_file";
+  // Cloudflare's verified-bot category (every plan): verified agents and crawlers.
+  if ((request.cf || {}).verifiedBotCategory) return "verified_bot";
   if (h.get("signature-agent") || (h.get("signature") && h.get("signature-input"))) return "signed_agent";
   if (BOT_TOKENS.some((t) => ua.includes(t))) return "declared_bot";
   if (HTTP_LIBRARIES.some((t) => ua.includes(t))) return "http_library";
@@ -78,6 +80,13 @@ async function hmacHex(key, body) {
     "raw", new TextEncoder().encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(body));
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The tracker's random session key from its first-party _at_sid cookie
+ * (no other cookie is read), so edge evidence can join that browser session. */
+export function trackerSession(cookieHeader) {
+  const m = /(?:^|;\s*)_at_sid=([A-Za-z0-9_-]{4,64})(?:;|$)/.exec(cookieHeader || "");
+  return m ? m[1] : null;
 }
 
 /** The record sent to Agent Trust. Header presence only, never values that identify a person. */
@@ -106,6 +115,8 @@ export async function buildRecord(request, response, env, now = Date.now()) {
     country: cf.country || null,
     bot_score: typeof bm.score === "number" ? bm.score : null,
     verified_bot: typeof bm.verifiedBot === "boolean" ? bm.verifiedBot : null,
+    verified_category: cf.verifiedBotCategory || null,
+    tracker_session: trackerSession(h.get("cookie")),
   };
 }
 

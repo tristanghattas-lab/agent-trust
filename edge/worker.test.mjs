@@ -1,7 +1,7 @@
 // node --test edge/worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forwardReason, buildRecord } from "./worker.js";
+import { forwardReason, buildRecord, trackerSession } from "./worker.js";
 
 const req = (path, headers = {}, method = "GET") =>
   new Request(`https://store.example${path}`, { method, headers });
@@ -46,4 +46,16 @@ test("record hashes the IP and carries header presence, not values", async () =>
   assert.ok(!JSON.stringify(rec).includes("203.0.113.7"));
   const rec2 = await buildRecord(r, null, { IP_SALT: "salt" }, 1759600000000 + 86400000);
   assert.notEqual(rec.ip_hash, rec2.ip_hash, "salt rotates daily");
+});
+
+test("tracker cookie and Cloudflare verified category are carried", async () => {
+  assert.equal(trackerSession("foo=1; _at_sid=s_abc123_xyz; bar=2"), "s_abc123_xyz");
+  assert.equal(trackerSession("_at_sid=bad value"), null);
+  assert.equal(trackerSession(null), null);
+  const r = new Request("https://store.example/products/x", {
+    headers: { ...browser, "signature-agent": '"https://chatgpt.com"', cookie: "_at_sid=s_k1_abc; cart=zzz" } });
+  const rec = await buildRecord(r, new Response("ok"), { IP_SALT: "s" });
+  assert.equal(rec.tracker_session, "s_k1_abc");
+  assert.equal(rec.verified_category, null);
+  assert.ok(!JSON.stringify(rec).includes("cart=zzz")); // no other cookie leaves Cloudflare
 });

@@ -20,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session as DBSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.classify import classify_session
+from app.classify import classify_session, classify_model
 from app.db import Base, engine, get_db
 from app.models import Order
 from app.models import Session as SessionModel
@@ -253,23 +253,7 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
                 started_at = started_at.replace(tzinfo=timezone.utc)
             session.time_to_checkout_seconds = (now - started_at).total_seconds()
 
-    result = classify_session(
-        user_agent=session.user_agent,
-        js_executed=session.js_executed,
-        event_count=session.event_count,
-        time_to_checkout_seconds=session.time_to_checkout_seconds,
-        cart_value=session.cart_value,
-        cf_bot_category=session.cf_bot_category,
-        pointer_env=session.pointer_env,
-        mouse_event_rate=session.mouse_event_rate,
-        click_count=session.click_count,
-        sparse_trail_click_count=session.sparse_trail_click_count,
-        automation_tells=session.automation_tells,
-        input_count=session.input_count,
-        keyless_input_count=session.keyless_input_count,
-        keydown_count=session.keydown_count,
-        edge_signals=session.edge_signals,
-    )
+    result = classify_model(session)
     session.is_agent = result.is_agent
     session.agent_family = result.agent_family
     session.classification_confidence = result.confidence

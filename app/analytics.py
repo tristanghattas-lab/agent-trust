@@ -73,12 +73,24 @@ def classify_traffic(row: pd.Series) -> str:
         return CRAWLER
     if any(t in ua for t in SCRAPER_TOKENS):
         return SCRAPER
+    reasons = row.get("classification_reasons") or ""
+    # Checked before behaviour: an agent that signed its requests (or that
+    # Cloudflare verified) has declared itself, even while driving a browser.
+    if "signed_agent:" in reasons:
+        return ASSISTANT
+    verified = re.search(r"cf_verified:([^,]+)", reasons)
+    if verified and "assistant" in verified.group(1):
+        return ASSISTANT
     if row.get("agent_family") == "browser-use":
         return AUTOMATION
     # A Web Bot Auth signature with no known user agent: an agent acting for
-    # someone (signed agents are typically user-directed), seen at the edge.
-    if "signed_agent:" in (row.get("classification_reasons") or ""):
+    # someone (signed agents are typically user-directed). It declared itself
+    # cryptographically, so it's declared even if it drives a browser.
+    if "signed_agent:" in reasons:
         return ASSISTANT
+    cat = re.search(r"cf_verified:([^,]+)", reasons)
+    if cat:
+        return ASSISTANT if "assistant" in cat.group(1) else CRAWLER if "crawler" in cat.group(1) else SCRAPER
     return SCRAPER
 
 
@@ -141,7 +153,24 @@ def classify_user_agent(ua: str | None) -> tuple[str, str] | None:
     return None
 
 
+SIGNED_AGENT_NAMES = {
+    "chatgpt.com": "ChatGPT agent", "openai.com": "ChatGPT agent", "claude.ai": "Claude agent",
+    "anthropic.com": "Claude agent", "perplexity.ai": "Perplexity agent", "google.com": "Gemini agent",
+}
+
+
 def agent_label(row: pd.Series) -> str:
+    """Specific agent name, marked "(verified)" when Cloudflare verified the
+    bot and "(signed)" when it sent a Web Bot Auth signature we haven't
+    verified ourselves."""
+    name = _agent_name(row)
+    reasons = row.get("classification_reasons") or ""
+    if "cf_verified:" in reasons and "(verified)" not in name and not name.startswith("Verified bot"):
+        return name.replace(" (signed)", "") + " (verified)"
+    return name
+
+
+def _agent_name(row: pd.Series) -> str:
     """Specific agent name for tables (ChatGPT, GPTBot, browser-use ...)."""
     ua = (row.get("user_agent") or "").lower()
     for token in ASSISTANT_TOKENS + CRAWLER_TOKENS + SCRAPER_TOKENS:
@@ -155,7 +184,10 @@ def agent_label(row: pd.Series) -> str:
         return lib.group(1)
     signed = re.search(r"signed_agent:([^,]+)", reasons)
     if signed:
-        return f"Signed agent ({signed.group(1)})"
+        known = SIGNED_AGENT_NAMES.get(signed.group(1))
+        return f"{known} (signed)" if known else f"Signed agent ({signed.group(1)})"
+    if "cf_verified:" in reasons:
+        return "Verified bot (" + re.search(r"cf_verified:([^,]+)", reasons).group(1).replace("-", " ") + ")"
     if "non_browser_client" in reasons:
         return "Headless client"
     if row.get("traffic_class") == AUTOMATION:
@@ -306,6 +338,7 @@ REASON_TEXT = {
     "automation_tells": "Browser reported automation fingerprints ({v})",
     "keyless_inputs": "{v} form fields filled without a single key press",
     "signed_agent": "Signed its requests as an agent (Web Bot Auth, {v})",
+    "cf_verified": "Cloudflare verified this bot: {v}",
     "http_library": "Requests came from an HTTP library, not a browser ({v})",
     "non_browser_client": "Requests lacked the headers every real browser sends",
 }
