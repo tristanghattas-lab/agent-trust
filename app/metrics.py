@@ -300,7 +300,7 @@ def overview(f: Frames) -> dict:
     by_class = s.groupby(["date", "traffic_class"]).size().unstack(fill_value=0).reindex(idx, fill_value=0)
     ai_daily = seg["ai_referred"].groupby("date").size().reindex(idx, fill_value=0)
     agent_rev = (
-        ai_influenced.assign(date=ai_influenced["created_at"].dt.tz_convert("Australia/Sydney").dt.date)
+        _real(ai_influenced).assign(date=lambda d: d["created_at"].dt.tz_convert("Australia/Sydney").dt.date)
         .groupby("date")["order_value"].sum().reindex(idx, fill_value=0)
         if not ai_influenced.empty else pd.Series(0, index=idx)
     )
@@ -364,10 +364,10 @@ def overview(f: Frames) -> dict:
                 ((recent["is_agent"].mean() if len(recent) else 0)
                  - (early["is_agent"].mean() if len(early) else 0)) * 100, 2),
             "ai_referred_visits": int(len(seg["ai_referred"])),
-            "ai_influenced_revenue": _num(ai_influenced["order_value"].sum(), 2) if len(ai_influenced) else 0.0,
+            "ai_influenced_revenue": _num(_real(ai_influenced)["order_value"].sum(), 2) if len(ai_influenced) else 0.0,
             "ai_influenced_orders": int(len(ai_influenced)),
             "ai_channel_orders": int((o["traffic_class"] == AI_CHANNEL).sum()) if not o.empty else 0,
-            "ai_channel_revenue": _num(o.loc[o["traffic_class"] == AI_CHANNEL, "order_value"].sum(), 2)
+            "ai_channel_revenue": _num(_real(o).loc[_real(o)["traffic_class"] == AI_CHANNEL, "order_value"].sum(), 2)
             if not o.empty else 0.0,
             "flagged_orders": int(len(flagged)),
         },
@@ -598,6 +598,17 @@ def session_detail(f: Frames, session_key: str) -> dict | None:
     return out
 
 
+def _real(o: pd.DataFrame) -> pd.DataFrame:
+    """Orders that aren't Shopify test-mode orders (revenue excludes tests)."""
+    if o.empty or "is_test" not in o:
+        return o
+    return o[~o["is_test"].fillna(False).astype(bool)]
+
+
+def _test_count(o: pd.DataFrame) -> int:
+    return int(len(o) - len(_real(o))) if not o.empty else 0
+
+
 def orders_summary(f: Frames) -> dict:
     o = f.orders
     out = _meta(f)
@@ -617,9 +628,10 @@ def orders_summary(f: Frames) -> dict:
         min_sample=MIN_N,
         kpis={
             "orders": int(len(o)),
-            "revenue": _num(o["order_value"].sum(), 2),
+            "test_orders": _test_count(o),
+            "revenue": _num(_real(o)["order_value"].sum(), 2),
             "agent_orders": int(len(agent_o)),
-            "agent_revenue": _num(agent_o["order_value"].sum(), 2) if len(agent_o) else 0.0,
+            "agent_revenue": _num(_real(agent_o)["order_value"].sum(), 2) if len(agent_o) else 0.0,
             "agent_dispute_rate": agent_rate,
             "human_dispute_rate": human_rate,
             "agent_dispute_multiple": _num(agent_rate / human_rate, 2) if agent_rate is not None and human_rate else None,
@@ -627,7 +639,7 @@ def orders_summary(f: Frames) -> dict:
         },
         by_segment=[
             {"segment": k, "label": SEGMENT_LABELS[k], "orders": int(len(df)),
-             "revenue": _num(df["order_value"].sum(), 2) if len(df) else 0.0,
+             "revenue": _num(_real(df)["order_value"].sum(), 2) if len(df) else 0.0,
              "aov": _num(df["order_value"].mean(), 2) if len(df) else None,
              "dispute_rate": dispute_rate(df)}
             for k, df in oseg.items()
@@ -635,7 +647,8 @@ def orders_summary(f: Frames) -> dict:
         # Raw sales-channel values, so unknown AI channels can be spotted and
         # added to AI_CHANNEL_TOKENS the first time they appear.
         by_source_name=[
-            {"source_name": name, "orders": int(len(g)), "revenue": _num(g["order_value"].sum(), 2),
+            {"source_name": name, "orders": int(len(g)), "test_orders": _test_count(g),
+             "revenue": _num(_real(g)["order_value"].sum(), 2),
              "ai_channel": g["ai_channel"].dropna().iloc[0] if g["ai_channel"].notna().any() else None}
             for name, g in o.assign(source_name=o["source_name"].fillna("(not reported)"))
             .groupby("source_name", sort=False)

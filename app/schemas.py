@@ -64,6 +64,7 @@ class OrderIn(BaseModel):
     app_id: str | None = None          # id of the app/channel that created the order
     landing_site: str | None = None    # first page of the buyer's visit, incl. UTM tags
     referring_site: str | None = None  # where the buyer came from
+    is_test: bool = False              # Shopify test-mode order
 
 
 class ThreatTestRunIn(BaseModel):

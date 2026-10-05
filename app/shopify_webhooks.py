@@ -72,6 +72,7 @@ def parse_order_payload(payload: dict) -> OrderIn:
         app_id=_str_or_none(payload.get("app_id")),
         landing_site=_str_or_none(payload.get("landing_site")),
         referring_site=_str_or_none(payload.get("referring_site")),
+        is_test=bool(payload.get("test")),
         order_evidence=json.dumps(
             {
                 "shipping_address": {

@@ -367,7 +367,8 @@ elif page == "Orders":
         dispute_note = f"{mult:.1f}× the human rate"
         dispute_tone = "down" if mult > 1 else "up"
     ui.kpi_row([
-        ui.kpi("Orders", f"{k['orders']:,}", money(k["revenue"]) + " revenue"),
+        ui.kpi("Orders", f"{k['orders']:,}", money(k["revenue"]) + " revenue"
+               + (f" · {k['test_orders']} test, not in revenue" if k.get("test_orders") else "")),
         ui.kpi("Placed by agents", f"{k['agent_orders']:,}", money(k["agent_revenue"]) + " revenue",
                colour=charts.CLASS_COLOURS["automation"]),
         ui.kpi("Agent dispute rate", pct(rate), dispute_note, tone=dispute_tone,
@@ -394,7 +395,8 @@ elif page == "Orders":
                       "assistant never visit the store; the order feed is the only way to see them.")
         st.dataframe(pd.DataFrame([{
             "Sales channel (source_name)": s["source_name"], "AI channel": s["ai_channel"] or "",
-            "Orders": s["orders"], "Revenue": money(s["revenue"])} for s in d["by_source_name"]]),
+            "Orders": s["orders"], "Test orders": s.get("test_orders", 0),
+            "Revenue (excl. test)": money(s["revenue"])} for s in d["by_source_name"]]),
             hide_index=True, use_container_width=True)
     with st.container(border=True):
         ui.card_title("Flagged orders", "Discount requests typed into address or note fields, and agent "

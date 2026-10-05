@@ -134,6 +134,7 @@ def _migrate_new_columns() -> None:
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
     ]
     with engine.begin() as conn:
         for stmt in statements:
@@ -145,6 +146,12 @@ def _migrate_new_columns() -> None:
                 text(f"UPDATE {table} SET shop_domain = :shop WHERE shop_domain IS NULL"),
                 {"shop": DEFAULT_SHOP},
             )
+        # The checkskincare.com test store couldn't take real payments before
+        # 22:30 AEDT on 5 Oct 2026 (no plan, then test mode), so every order up
+        # to then was a test. They arrived before is_test was recorded.
+        conn.execute(text(
+            "UPDATE orders SET is_test = TRUE WHERE shop_domain = '73ee52.myshopify.com' "
+            "AND created_at < '2026-10-05T11:30:00+00:00' AND is_test IS NOT TRUE"))
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -370,6 +377,7 @@ async def shopify_order_webhook(
         app_id=order_in.app_id,
         landing_site=order_in.landing_site,
         referring_site=order_in.referring_site,
+        is_test=order_in.is_test,
     )
     db.add(order)
     db.commit()

@@ -98,3 +98,14 @@ def test_webhook_accepts_any_listed_store_secret(client, monkeypatch):
     assert post(990001) == 200
     monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", "other_store_secret")
     assert post(990002) == 401
+
+
+def test_test_mode_orders_are_counted_but_not_revenue(client):
+    shop = "test-flag-store.myshopify.com"
+    webhook(client, shop, 880001, 100.0, test=True)
+    webhook(client, shop, 880002, 50.0)
+    k = client.get(f"/metrics/orders?shop={shop}&days=7",
+                   headers={"Authorization": "Bearer test-metrics-key"}).json()
+    assert k["kpis"]["orders"] == 2 and k["kpis"]["test_orders"] == 1
+    assert k["kpis"]["revenue"] == 50.0
+    assert k["by_source_name"][0]["test_orders"] == 1

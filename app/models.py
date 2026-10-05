@@ -141,6 +141,9 @@ class Order(Base):
     app_id: Mapped[str | None] = mapped_column(String, nullable=True)
     landing_site: Mapped[str | None] = mapped_column(Text, nullable=True)
     referring_site: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Shopify's `test` flag: placed with a test card in test mode. Counted
+    # and attributed like any order, but kept out of revenue figures.
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False)
 
     session: Mapped["Session | None"] = relationship(back_populates="orders")
     outcomes: Mapped[list["Outcome"]] = relationship(back_populates="order")
