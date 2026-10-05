@@ -499,16 +499,20 @@ elif page == "Connections":
         else:
             st.markdown(
                 '<div class="at-card-sub" style="line-height:1.6">'
-                "1. In Cloudflare, open <b>My Profile → API Tokens → Create Token → Custom token</b>.<br>"
-                "2. Permission: <b>Zone → Analytics → Read</b>. Zone resources: <b>Include → Specific zone →</b> "
-                "the store's domain. Create it and copy the token.<br>"
-                "3. Copy the <b>Zone ID</b> from the domain's Overview page (right-hand column, API section).<br>"
+                "1. In Cloudflare, open <b>Manage account → Account API tokens → Create token → Start from scratch</b>.<br>"
+                "2. Scope: <b>Specified Domains →</b> the store's domain. Tick only <b>Analytics &amp; Logs → "
+                "Zone Analytics → Read</b>. Create it and copy the token (starts <code>cfat_</code>).<br>"
+                "3. Copy the <b>Zone ID</b> (not the Account ID) from the domain's Overview page, right-hand "
+                "column under API.<br>"
                 "The token is tested before it's saved, stored encrypted, and never shown again.</div>",
                 unsafe_allow_html=True)
             with st.form("cf_connect"):
                 zone = st.text_input("Zone ID", placeholder="32 hex characters")
                 token = st.text_input("API token", type="password")
                 if st.form_submit_button("Connect Cloudflare"):
+                    if len(token.strip()) < 20:
+                        st.error("Paste the API token first (the long value that starts cfat_).")
+                        st.stop()
                     with st.spinner("Testing the token and pulling the last 7 days…"):
                         try:
                             res = client.cf_connect(shop, zone.strip(), token.strip())
