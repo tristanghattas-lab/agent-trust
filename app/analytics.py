@@ -19,6 +19,22 @@ AUTOMATION = "Browser automation (undeclared)"
 CRAWLER = "AI crawler"
 SCRAPER = "Scraper / other bot"
 AGENT_CLASSES = [ASSISTANT, AUTOMATION, CRAWLER, SCRAPER]
+# Orders placed inside an AI assistant (agentic checkout: ChatGPT, Copilot,
+# Gemini...). They never visit the storefront, so they exist only as orders.
+AI_CHANNEL = "AI channel (agentic checkout)"
+UNMATCHED = "Unmatched session"
+
+# Substrings of an order's source_name that mean an AI sales channel. Shopify
+# doesn't publish these values; this list is a best guess, kept loose on
+# purpose, and the raw source_name is always shown so real values can be
+# added the first time one appears. "google" alone is deliberately absent:
+# it would also match the Google Shopping channel.
+AI_CHANNEL_TOKENS = {
+    "chatgpt": "ChatGPT", "openai": "ChatGPT", "copilot": "Copilot",
+    "gemini": "Gemini", "google ai": "Google AI Mode", "ai mode": "Google AI Mode",
+    "perplexity": "Perplexity", "meta ai": "Meta AI", "claude": "Claude",
+    "agentic": "AI channel",
+}
 ALL_CLASSES = [HUMAN] + AGENT_CLASSES
 
 # User-agent tokens. A user-directed assistant fetches pages because a person
@@ -66,6 +82,20 @@ def ai_referral_source(referrer: str | None) -> str | None:
         if domain in ref:
             return name
     return None
+
+
+def ai_channel(source_name: str | None, app_id: str | None = None) -> str | None:
+    text = f"{source_name or ''} {app_id or ''}".lower()
+    for token, name in AI_CHANNEL_TOKENS.items():
+        if token in text:
+            return name
+    return None
+
+
+def order_referral_source(landing_site: str | None, referring_site: str | None) -> str | None:
+    """AI referral from the order's own attribution: the referring site, or a
+    UTM tag on the landing page (ChatGPT adds utm_source=chatgpt.com to links)."""
+    return ai_referral_source(referring_site) or ai_referral_source(landing_site)
 
 
 def agent_label(row: pd.Series) -> str:
@@ -169,10 +199,27 @@ def enrich_frames(sessions: pd.DataFrame, orders: pd.DataFrame, outcomes: pd.Dat
                 s[["session_key", "traffic_class", "agent_name", "ai_source"]],
                 on="session_key", how="left",
             )
-        o["traffic_class"] = o.get("traffic_class", pd.Series(dtype=str)).fillna("Unmatched session")
+        for col in ("traffic_class", "agent_name", "ai_source"):
+            if col not in o:  # no sessions to join (e.g. tracker not installed)
+                o[col] = None
+        for col in ("source_name", "app_id", "landing_site", "referring_site"):
+            if col not in o:
+                o[col] = None
+        o["ai_channel"] = [ai_channel(sn, aid) for sn, aid in zip(o["source_name"], o["app_id"])]
+        o["order_ref_source"] = [order_referral_source(ls, rs)
+                                 for ls, rs in zip(o["landing_site"], o["referring_site"])]
+        # Prefer what the tracker saw; fall back to the order's own attribution,
+        # which works with no tracker at all.
+        o["ai_source"] = o["ai_source"].where(o["ai_source"].notna(), o["order_ref_source"])
+        o.loc[o["traffic_class"].isna() & o["ai_channel"].notna(), "traffic_class"] = AI_CHANNEL
+        # An order with no matched session but an AI referrer was placed by a
+        # person who came from an AI assistant.
+        o.loc[o["traffic_class"].isna() & o["ai_source"].notna(), "traffic_class"] = HUMAN
+        o["traffic_class"] = o["traffic_class"].fillna(UNMATCHED)
+        o.loc[o["traffic_class"] == AI_CHANNEL, "agent_name"] = o["ai_channel"]
         # A discount code on a human order is normal promo use; on an agent
         # order it's worth a look (agents guess codes — icelabs runs).
-        agent_code = o["traffic_class"].isin(AGENT_CLASSES) & o["evidence"].map(
+        agent_code = o["traffic_class"].isin(AGENT_CLASSES + [AI_CHANNEL]) & o["evidence"].map(
             lambda e: bool(e.get("discount_codes")))
         o["flags"] = [f + ["Agent order used a discount code"] if a else f
                       for f, a in zip(o["flags"], agent_code)]

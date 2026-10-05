@@ -20,8 +20,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.analytics import (
-    AGENT_CLASSES, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER, SEVERITY_ORDER,
-    enrich_frames, explain,
+    AGENT_CLASSES, AI_CHANNEL, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER,
+    SEVERITY_ORDER, enrich_frames, explain,
 )
 from app.shops import DEMO_SHOP
 
@@ -29,13 +29,26 @@ MIN_N = 20  # smallest sample a rate is reported for; below it the rate is null
 BAD_OUTCOMES = {"chargeback", "disputed"}
 CLASS_KEYS = {
     HUMAN: "human", ASSISTANT: "assistant", AUTOMATION: "automation",
-    CRAWLER: "crawler", SCRAPER: "scraper",
+    CRAWLER: "crawler", SCRAPER: "scraper", AI_CHANNEL: "ai_channel",
 }
-SEGMENTS = ["human", "ai_referred", "assistant", "automation"]
+SEGMENTS = ["human", "ai_referred", "assistant", "automation"]          # sessions
+ORDER_SEGMENTS = SEGMENTS + ["ai_channel"]                              # orders
 SEGMENT_LABELS = {
     "human": "All human visits", "ai_referred": "AI-referred humans",
-    "assistant": ASSISTANT, "automation": AUTOMATION,
+    "assistant": ASSISTANT, "automation": AUTOMATION, "ai_channel": AI_CHANNEL,
 }
+AGENT_ORDER_CLASSES = AGENT_CLASSES + [AI_CHANNEL]
+
+# What each data source can see. Front ends show this so a merchant knows
+# what's covered; agent classes a store's sources can't see are hidden
+# rather than shown as zero.
+SOURCES = {
+    "tracker": "Browser tracker: people and agents that run a real browser",
+    "orders": "Order feed: every order, including ones placed inside AI assistants",
+    "edge": "Edge logs (Cloudflare): fetch-only assistants, crawlers and scrapers",
+    "pixel": "Checkout pixel: checkout steps for browser-based visitors",
+}
+EDGE_ONLY_CLASSES = {"crawler", "scraper"}
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +93,7 @@ class Frames:
     start: pd.Timestamp
     end: pd.Timestamp
     days: int
+    coverage: dict | None = None
 
 
 @lru_cache(maxsize=2)
@@ -98,8 +112,9 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
         end = s["first_seen"].max() if not s.empty else pd.Timestamp.now(tz="UTC")
         start = end - timedelta(days=days)
         s = s[s["first_seen"] > start]
-        o = o[o["session_key"].isin(s["session_key"])] if not o.empty else o
-        return Frames(shop, "demo", s, o, r, start, end, days)
+        o = o[o["created_at"] > start] if not o.empty else o
+        coverage = {"tracker": True, "orders": True, "edge": True, "pixel": False, "simulated": True}
+        return Frames(shop, "demo", s, o, r, start, end, days, coverage)
 
     end = pd.Timestamp.now(tz="UTC")
     start = end - timedelta(days=days)
@@ -115,8 +130,35 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
             "WHERE o.shop_domain = :shop AND o.created_at > :start"
         )
         runs = q("SELECT * FROM threat_test_runs WHERE shop_domain = :shop", {"shop": shop})
+        coverage = _live_coverage(conn, shop)
     s, o, _, r = enrich_frames(sessions, orders, outcomes, runs)
-    return Frames(shop, "live", s, o, r, start, end, days)
+    return Frames(shop, "live", s, o, r, start, end, days, coverage)
+
+
+def _live_coverage(conn, shop: str) -> dict:
+    """Which sources have ever sent data for this store. Edge logs arrive as
+    sessions that never ran JavaScript: the tracker can't produce those."""
+    def exists(sql: str) -> bool:
+        return conn.execute(text(sql), {"shop": shop}).first() is not None
+
+    return {
+        "tracker": exists("SELECT 1 FROM sessions WHERE shop_domain = :shop AND js_executed LIMIT 1"),
+        "orders": exists("SELECT 1 FROM orders WHERE shop_domain = :shop LIMIT 1"),
+        "edge": exists("SELECT 1 FROM sessions WHERE shop_domain = :shop AND NOT js_executed LIMIT 1"),
+        "pixel": False,  # not built yet
+        "simulated": False,
+    }
+
+
+def coverage_block(f: Frames) -> dict:
+    cov = dict(f.coverage or {})
+    visible = ["assistant", "automation"] + (["crawler", "scraper"] if cov.get("edge") else [])
+    return {
+        **cov,
+        "sources": [{"key": k, "label": v, "connected": bool(cov.get(k))} for k, v in SOURCES.items()],
+        "visible_agent_classes": visible,
+        "hidden_agent_classes": [c for c in ("crawler", "scraper") if c not in visible],
+    }
 
 
 def list_shops(engine: Engine) -> list[str]:
@@ -138,6 +180,7 @@ def _meta(f: Frames) -> dict:
         "start": _iso(f.start),
         "end": _iso(f.end),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "coverage": coverage_block(f),
     }
 
 
@@ -158,12 +201,13 @@ def _session_segments(s: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 def _order_segments(o: pd.DataFrame) -> dict[str, pd.DataFrame]:
     if o.empty:
-        return {k: o for k in SEGMENTS}
+        return {k: o for k in ORDER_SEGMENTS}
     return {
         "human": o[(o["traffic_class"] == HUMAN) & o["ai_source"].isna()],
-        "ai_referred": o[o["ai_source"].notna()],
+        "ai_referred": o[(o["traffic_class"] == HUMAN) & o["ai_source"].notna()],
         "assistant": o[o["traffic_class"] == ASSISTANT],
         "automation": o[o["traffic_class"] == AUTOMATION],
+        "ai_channel": o[o["traffic_class"] == AI_CHANNEL],
     }
 
 
@@ -189,7 +233,7 @@ def overview(f: Frames) -> dict:
     recent = s[s["first_seen"] > f.end - span]
     early = s[s["first_seen"] <= f.start + span]
     ai_influenced = (
-        o[o["traffic_class"].isin(AGENT_CLASSES) | o["ai_source"].notna()] if not o.empty else o
+        o[o["traffic_class"].isin(AGENT_ORDER_CLASSES) | o["ai_source"].notna()] if not o.empty else o
     )
     flagged = o[o["flags"].map(len) > 0] if not o.empty else o
 
@@ -243,6 +287,9 @@ def overview(f: Frames) -> dict:
             "ai_referred_visits": int(len(seg["ai_referred"])),
             "ai_influenced_revenue": _num(ai_influenced["order_value"].sum(), 2) if len(ai_influenced) else 0.0,
             "ai_influenced_orders": int(len(ai_influenced)),
+            "ai_channel_orders": int((o["traffic_class"] == AI_CHANNEL).sum()) if not o.empty else 0,
+            "ai_channel_revenue": _num(o.loc[o["traffic_class"] == AI_CHANNEL, "order_value"].sum(), 2)
+            if not o.empty else 0.0,
             "flagged_orders": int(len(flagged)),
         },
         daily=daily,
@@ -272,6 +319,10 @@ def activity(f: Frames, limit: int = 10) -> list[dict]:
                 items.append({"ts": r.created_at, "kind": "agent_order", "severity": "medium",
                               "text": f"Undeclared agent placed a ${r.order_value:,.0f} order",
                               "detail": "Caught on behaviour, not user agent", "order_id": r.shopify_order_id})
+            elif r.traffic_class == AI_CHANNEL:
+                items.append({"ts": r.created_at, "kind": "ai_channel_order", "severity": "info",
+                              "text": f"${r.order_value:,.0f} order placed inside {r.ai_channel}",
+                              "detail": "Agentic checkout: never visited the store", "order_id": r.shopify_order_id})
             elif r.traffic_class == ASSISTANT:
                 items.append({"ts": r.created_at, "kind": "assistant_order", "severity": "info",
                               "text": f"{r.agent_name} completed a ${r.order_value:,.0f} purchase",
@@ -418,7 +469,7 @@ def orders_summary(f: Frames) -> dict:
         out.update(kpis=None, by_segment=[], flagged=[])
         return out
     oseg = _order_segments(o)
-    agent_o = o[o["traffic_class"].isin(AGENT_CLASSES)]
+    agent_o = o[o["traffic_class"].isin(AGENT_ORDER_CLASSES)]
     human_o = o[o["traffic_class"] == HUMAN]
     flagged = o[o["flags"].map(len) > 0].sort_values("created_at", ascending=False)
 
@@ -444,6 +495,14 @@ def orders_summary(f: Frames) -> dict:
              "aov": _num(df["order_value"].mean(), 2) if len(df) else None,
              "dispute_rate": dispute_rate(df)}
             for k, df in oseg.items()
+        ],
+        # Raw sales-channel values, so unknown AI channels can be spotted and
+        # added to AI_CHANNEL_TOKENS the first time they appear.
+        by_source_name=[
+            {"source_name": name, "orders": int(len(g)), "revenue": _num(g["order_value"].sum(), 2),
+             "ai_channel": g["ai_channel"].dropna().iloc[0] if g["ai_channel"].notna().any() else None}
+            for name, g in o.assign(source_name=o["source_name"].fillna("(not reported)"))
+            .groupby("source_name", sort=False)
         ],
         flagged=[
             {"shopify_order_id": r.shopify_order_id, "created_at": _iso(r.created_at),

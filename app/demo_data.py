@@ -329,6 +329,14 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
             age_verified=True,
             allocation_flagged=population == "automation" and rng.random() < 0.2,
             customer_email=None,
+            # Shopify's attribution fields. ChatGPT tags outbound links with
+            # utm_source=chatgpt.com, so AI referrals show on the order itself.
+            source_name="web",
+            app_id=None,
+            landing_site=landing + (
+                f"?utm_source={referrer.split('//')[1].strip('/').removeprefix('www.')}"
+                if population == "human_ai_referred" else ""),
+            referring_site=referrer or None,
             order_evidence=json.dumps(
                 {
                     "shipping_address": {"address2": address2},
@@ -339,6 +347,41 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
             ),
         )
     return session, order
+
+
+# Orders placed inside an AI assistant (agentic checkout). The source_name
+# values are placeholders: Shopify doesn't publish what it sends for these
+# channels, and the real ones will be read off the first live order.
+AI_CHANNEL_SOURCES = [("chatgpt", 0.65), ("copilot", 0.2), ("gemini", 0.15)]
+
+
+def _ai_channel_orders(rng: np.random.Generator, start: datetime) -> list[dict]:
+    orders = []
+    for day_idx in range(DEMO_DAYS):
+        growth = day_idx / DEMO_DAYS
+        for _ in range(int(rng.poisson(0.4 + 2.2 * growth))):
+            ts = start + timedelta(days=day_idx, hours=float(rng.uniform(0, 24)))
+            orders.append(dict(
+                id=str(uuid.uuid4()),
+                shopify_order_id=str(int(rng.integers(5_000_000_000, 5_999_999_999))),
+                session_key=None,
+                session_match_method=None,
+                order_value=round(float(rng.lognormal(5.4, 0.5)), 2),
+                currency="AUD",
+                created_at=ts,
+                shipping_state=STATES[rng.choice(len(STATES), p=STATE_W)],
+                age_verified=True,
+                allocation_flagged=False,
+                customer_email=None,
+                source_name=_pick(rng, AI_CHANNEL_SOURCES),
+                app_id=None,
+                landing_site=None,
+                referring_site=None,
+                order_evidence=json.dumps({"shipping_address": {"address2": None}, "note": None,
+                                           "total_discounts": "0.00", "discount_codes": []}),
+                _population="ai_channel",
+            ))
+    return orders
 
 
 def _threat_runs(now: datetime) -> pd.DataFrame:
@@ -403,13 +446,14 @@ def build_demo_dataset(now: datetime | None = None) -> dict[str, pd.DataFrame]:
                 if o:
                     orders.append(o)
 
+    channel_orders = _ai_channel_orders(rng, start)
     sessions_df = pd.DataFrame(sessions)
-    orders_df = pd.DataFrame(orders)
+    orders_df = pd.DataFrame(orders + channel_orders).drop(columns="_population")
 
     population_by_key = dict(zip(sessions_df.session_key, sessions_df._population))
     outcomes = []
-    for o in orders:
-        pop = population_by_key[o["session_key"]]
+    for o in orders + channel_orders:
+        pop = o.get("_population") or population_by_key[o["session_key"]]
         r = rng.random()
         dispute_p = 0.10 if pop == "automation" else 0.02 if pop == "assistant" else 0.012
         refund_p = 0.06 if pop == "automation" else 0.03

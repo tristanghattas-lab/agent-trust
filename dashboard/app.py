@@ -88,9 +88,17 @@ def load(view: str, **params) -> dict:
         st.stop()
 
 
-def header(title: str, data: dict, note: str = "", pill: str | None = None) -> None:
+def header(title: str, data: dict, note: str = "", pill: str | None = None,
+           coverage: bool = True) -> None:
     crumb = f"{shop_label(shop)} · last {days} days"
     ui.page_header(title, crumb, demo=bool(data.get("synthetic")), note=note, live_label=pill)
+    if coverage:
+        ui.coverage_strip(data.get("coverage"))
+
+
+def visible_classes(data: dict) -> list[str]:
+    cov = data.get("coverage") or {}
+    return cov.get("visible_agent_classes") or ["assistant", "automation", "crawler", "scraper"]
 
 
 def empty(msg: str) -> None:
@@ -110,17 +118,20 @@ if page == "Overview":
         st.stop()
     daily = d["daily"]
     chg = k["agent_share_change_pts"] or 0
+    shown = visible_classes(d)
     ui.kpi_row([
         ui.kpi("Sessions", f"{k['sessions']:,}", f"{k['agent_sessions']:,} from agents",
                spark=[r["total"] for r in daily], colour="#86b6ef"),
-        ui.kpi("Agent share of traffic", pct(k["agent_share"]), f"{chg:+.1f} pts over period",
+        ui.kpi("Agent share of traffic" if "crawler" in shown else "Agent share (browser-visible)",
+               pct(k["agent_share"]), f"{chg:+.1f} pts over period",
                tone="neutral", spark=[r["agent_share"] or 0 for r in daily],
-               help="Share of sessions from any agent class."),
+               help="Share of sessions from agents this store's data sources can see."),
         ui.kpi("Visits referred by AI", f"{k['ai_referred_visits']:,}", "from AI assistants",
                spark=[r["ai_referred"] for r in daily], colour="#4a3aa7",
                help="People who clicked through from an AI assistant's answer."),
         ui.kpi("AI-influenced revenue", money(k["ai_influenced_revenue"]),
-               f"{k['ai_influenced_orders']} orders", tone="up",
+               f"{k['ai_influenced_orders']} order{'' if k['ai_influenced_orders'] == 1 else 's'} · "
+               f"{k['ai_channel_orders']} inside AI apps", tone="up",
                spark=pd.Series([r["ai_influenced_revenue"] or 0 for r in daily]).rolling(7, 1).mean(),
                colour="#0ca30c",
                help="Orders placed by an agent, or by a person an AI assistant referred."),
@@ -132,7 +143,7 @@ if page == "Overview":
     left, right = st.columns([2, 1], gap="medium")
     with left, st.container(border=True):
         ui.card_title("Agent traffic", "Sessions per day by class. People excluded so the mix is visible.")
-        plot(charts.agent_traffic(daily))
+        plot(charts.agent_traffic(daily, shown))
     with right, st.container(border=True):
         ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
         colour = {"high": "#d03b3b", "medium": "#eb6834", "info": "#2a78d6"}
@@ -155,7 +166,7 @@ if page == "Overview":
                 hide_index=True, use_container_width=True)
     with right, st.container(border=True):
         ui.card_title("Who the agents are", "Sessions by agent this period.")
-        top = d["top_agents"]
+        top = [t for t in d["top_agents"] if t["class"] in shown]
         if top:
             plot(charts.hbars([t["name"] for t in top], [t["sessions"] for t in top],
                               [charts.CLASS_COLOURS[t["class"]] for t in top], fmt=",d"))
@@ -214,10 +225,14 @@ elif page == "Agent sessions":
     if not counts:
         empty("No agent sessions recorded for this store yet.")
         st.stop()
+    shown = visible_classes(base)
     ui.kpi_row([
-        ui.kpi(charts.CLASS_LABELS[c], f"{counts.get(c, 0):,}", colour=charts.CLASS_COLOURS[c])
+        ui.kpi(charts.CLASS_LABELS[c], f"{counts.get(c, 0):,}" if c in shown else "—",
+               None if c in shown else "needs edge logs", colour=charts.CLASS_COLOURS[c])
         for c in ["assistant", "automation", "crawler", "scraper"]
     ])
+    if "crawler" not in shown:
+        classes = {k: v for k, v in classes.items() if v in (None, "assistant", "automation")}
     st.write("")
 
     with st.container(border=True):
@@ -326,6 +341,13 @@ elif page == "Orders":
                               [s["dispute_rate"] for s in rated],
                               [charts.SEGMENT_COLOURS[s["segment"]] for s in rated], fmt=".1%"))
     with st.container(border=True):
+        ui.card_title("Order sources", "Shopify's sales channel for each order. Orders placed inside an AI "
+                      "assistant never visit the store; the order feed is the only way to see them.")
+        st.dataframe(pd.DataFrame([{
+            "Sales channel (source_name)": s["source_name"], "AI channel": s["ai_channel"] or "",
+            "Orders": s["orders"], "Revenue": money(s["revenue"])} for s in d["by_source_name"]]),
+            hide_index=True, use_container_width=True)
+    with st.container(border=True):
         ui.card_title("Flagged orders", "Discount requests typed into address or note fields, and agent "
                       "orders using discount codes. Models don't treat this as harmful, so agents keep trying.")
         if d["flagged"]:
@@ -342,7 +364,7 @@ elif page == "Orders":
 # ---------------------------------------------------------------------------
 elif page == "Threat testing":
     d = load("threats")
-    header("Threat testing", d, pill="REAL RESULTS")
+    header("Threat testing", d, pill="REAL RESULTS", coverage=False)
     k = d.get("kpis")
     if not k:
         empty("No threat-test runs for this store yet. Run agents through harness/tasks.py.")

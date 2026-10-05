@@ -39,7 +39,10 @@ SEGMENT_COLOURS = {
     "ai_referred": "#4a3aa7",
     "assistant": CLASS_COLOURS["assistant"],
     "automation": CLASS_COLOURS["automation"],
+    "ai_channel": "#1baf7a",
 }
+CLASS_COLOURS["ai_channel"] = SEGMENT_COLOURS["ai_channel"]
+CLASS_LABELS["ai_channel"] = "AI channel (agentic checkout)"
 SOURCE_COLOURS = {
     "ChatGPT": "#2a78d6", "Perplexity": "#eb6834", "Gemini": "#1baf7a",
     "Copilot": "#eda100", "Claude": "#e87ba4",
@@ -72,10 +75,10 @@ def _layout(fig: go.Figure, height: int = 300, legend: bool = True) -> go.Figure
     return fig
 
 
-def agent_traffic(daily: list[dict]) -> go.Figure:
+def agent_traffic(daily: list[dict], classes: list[str] | None = None) -> go.Figure:
     df = pd.DataFrame(daily)
     fig = go.Figure()
-    for key in ["assistant", "automation", "crawler", "scraper"]:
+    for key in classes or ["assistant", "automation", "crawler", "scraper"]:
         fig.add_bar(
             x=pd.to_datetime(df["date"]), y=df[key], name=CLASS_LABELS[key],
             marker_color=CLASS_COLOURS[key], marker_line=dict(color=SURFACE, width=0.5),
@@ -97,7 +100,9 @@ def funnel(rows: list[dict]) -> go.Figure:
             hovertemplate=r["label"] + "<br>%{x}: %{y:.1%} of visits<extra></extra>",
         )
     fig.update_layout(barmode="group", bargroupgap=0.1)
-    fig.update_yaxes(tickformat=".0%")
+    top = max([r[k] or 0 for r in rows for k, _ in stages] + [0])
+    # Fixed range from zero: an all-zero funnel otherwise gets a -100%..100% axis.
+    fig.update_yaxes(tickformat=".0%", range=[0, top * 1.15 if top else 0.1])
     return _layout(fig, height=300)
 
 

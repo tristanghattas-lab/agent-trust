@@ -117,6 +117,10 @@ def _migrate_new_columns() -> None:
         "CREATE INDEX IF NOT EXISTS ix_sessions_shop_domain ON sessions (shop_domain)",
         "CREATE INDEX IF NOT EXISTS ix_orders_shop_domain ON orders (shop_domain)",
         "CREATE INDEX IF NOT EXISTS ix_threat_test_runs_shop_domain ON threat_test_runs (shop_domain)",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS source_name VARCHAR",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS app_id VARCHAR",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS landing_site TEXT",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS referring_site TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
@@ -349,6 +353,10 @@ async def shopify_order_webhook(
         allocation_flagged=order_in.allocation_flagged,
         customer_email=order_in.customer_email,
         order_evidence=order_in.order_evidence,
+        source_name=order_in.source_name,
+        app_id=order_in.app_id,
+        landing_site=order_in.landing_site,
+        referring_site=order_in.referring_site,
     )
     db.add(order)
     db.commit()

@@ -65,6 +65,13 @@ def parse_order_payload(payload: dict) -> OrderIn:
         client_user_agent=(payload.get("client_details") or {}).get("user_agent"),
         allocation_flagged=False,  # no allocation logic on a generic dev store
         customer_email=payload.get("email") or payload.get("contact_email"),
+        # Attribution fields from the order resource. Shopify documents these
+        # on the REST order; confirm the exact source_name/app_id values for
+        # AI channels against the first real agentic-checkout order.
+        source_name=_str_or_none(payload.get("source_name")),
+        app_id=_str_or_none(payload.get("app_id")),
+        landing_site=_str_or_none(payload.get("landing_site")),
+        referring_site=_str_or_none(payload.get("referring_site")),
         order_evidence=json.dumps(
             {
                 "shipping_address": {
@@ -79,6 +86,12 @@ def parse_order_payload(payload: dict) -> OrderIn:
             }
         ),
     )
+
+
+def _str_or_none(value) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
 
 
 def get_webhook_secret() -> str:

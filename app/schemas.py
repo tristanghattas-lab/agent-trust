@@ -57,6 +57,13 @@ class OrderIn(BaseModel):
     # record itself instead of trusting the agent's own report.
     customer_email: str | None = None
     order_evidence: str | None = None  # JSON string
+    # Shopify's own attribution for the order. These come from the order
+    # itself, so they work for orders that never touched the storefront
+    # (e.g. placed inside ChatGPT via agentic checkout) and need no tracker.
+    source_name: str | None = None     # sales channel: "web", "pos", or the channel app
+    app_id: str | None = None          # id of the app/channel that created the order
+    landing_site: str | None = None    # first page of the buyer's visit, incl. UTM tags
+    referring_site: str | None = None  # where the buyer came from
 
 
 class ThreatTestRunIn(BaseModel):

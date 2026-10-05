@@ -106,6 +106,15 @@ CSS = """
   .at-kv:last-child {border-bottom:none;}
   .at-kv span:first-child {color:#52514e;} .at-kv span:last-child {color:#0b0b0b; text-align:right;}
 
+  /* --- coverage strip --- */
+  .at-cov {display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin: 0 0 14px;}
+  .at-cov-label {font-size:0.75rem; color:#898781; font-weight:600; letter-spacing:0.04em;
+                 text-transform:uppercase; margin-right:2px;}
+  .at-cov-chip {display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+                font-size:0.78rem; border:1px solid rgba(11,11,11,0.10); background:#fcfcfb; color:#0b0b0b;}
+  .at-cov-chip.off {color:#898781; background:transparent; border-style:dashed;}
+  .at-cov-note {font-size:0.78rem; color:#52514e;}
+
   /* --- widgets --- */
   div[data-testid="stDataFrame"] {border-radius:10px; overflow:hidden;}
   div[data-testid="stExpander"] details {border-radius:10px; background:#fcfcfb;}
@@ -190,6 +199,31 @@ def page_header(title: str, crumb: str, demo: bool, note: str = "",
             f"a Shopify dev store; volumes and rates are invented. {esc(note)}</div>",
             unsafe_allow_html=True,
         )
+
+
+COVERAGE_NAMES = {"tracker": "Browser tracker", "orders": "Order feed",
+                  "edge": "Edge logs", "pixel": "Checkout pixel"}
+
+
+def coverage_strip(cov: dict | None) -> None:
+    """One line under the header: which data sources this store has, and
+    what's missing. Merchants should never mistake 'not visible' for 'zero'."""
+    if not cov:
+        return
+    chips = "".join(
+        f'<span class="at-cov-chip{"" if s["connected"] else " off"}" title="{esc(s["label"])}">'
+        f'{"●" if s["connected"] else "○"} {esc(COVERAGE_NAMES.get(s["key"], s["key"]))}</span>'
+        for s in cov.get("sources", [])
+    )
+    if cov.get("simulated"):
+        note = "Simulated: all sources shown so every view is populated."
+    elif not cov.get("edge"):
+        note = ("Fetch-only assistants, crawlers and scrapers never run JavaScript, so only edge logs "
+                "can see them. They're hidden here, not zero.")
+    else:
+        note = ""
+    st.markdown(f'<div class="at-cov"><span class="at-cov-label">Data sources</span>{chips}'
+                f'<span class="at-cov-note">{esc(note)}</span></div>', unsafe_allow_html=True)
 
 
 def relative_time(ts: pd.Timestamp, now: pd.Timestamp) -> str:

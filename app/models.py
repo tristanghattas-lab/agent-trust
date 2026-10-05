@@ -129,6 +129,13 @@ class Order(Base):
     customer_email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # JSON: shipping address text fields, note, discounts -- see parse_order_payload.
     order_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Shopify's attribution for the order, stored raw. AI channel and AI
+    # referral are derived from these in app/analytics.py, so the mapping can
+    # change without re-ingesting.
+    source_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    app_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    landing_site: Mapped[str | None] = mapped_column(Text, nullable=True)
+    referring_site: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     session: Mapped["Session | None"] = relationship(back_populates="orders")
     outcomes: Mapped[list["Outcome"]] = relationship(back_populates="order")

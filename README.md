@@ -170,6 +170,19 @@ Every number a merchant sees comes from `app/metrics.py`, served by
   end must show a test-data label when it sees that flag.
 - **Small samples:** rates over fewer than 20 orders come back as `null`
   rather than a misleading number.
+- **Coverage:** every response carries a `coverage` block saying which data
+  sources the store has (browser tracker, order feed, edge logs, checkout
+  pixel). Crawlers, scrapers and fetch-only assistants never run JavaScript,
+  so only edge logs can see them; without edge data they're listed in
+  `hidden_agent_classes` and front ends must show them as "not visible",
+  never as zero.
+- **Order attribution:** the order webhook stores Shopify's `source_name`,
+  `app_id`, `landing_site` and `referring_site`. From these, orders placed
+  inside an AI assistant (agentic checkout) and orders from people an AI
+  referred (referrer or `utm_source=chatgpt.com`) are counted even with no
+  tracker installed. Shopify doesn't publish the `source_name` values for AI
+  channels: the mapping in `app/analytics.py` (`AI_CHANNEL_TOKENS`) is a best
+  guess, and the Orders view lists raw values so the real ones can be added.
 
 Run the tests with `python -m pytest tests`.
 
