@@ -57,6 +57,7 @@ def test_groups_requests_and_classifies(client):
     r = post(client, [
         rec("/robots.txt", "Mozilla/5.0; compatible; GPTBot/1.2", ip="crawler"),
         rec("/agents.md", "Mozilla/5.0; compatible; GPTBot/1.2", ip="crawler", ts=TS + 60_000),
+        rec("/sitemap.xml", "Mozilla/5.0; compatible; GPTBot/1.2", ip="crawler", ts=TS + 25 * 60_000),
         rec("/products/x", "Mozilla/5.0 ChatGPT-User/1.0", ip="assist"),
         rec("/products.json", "python-requests/2.32", ip="scraper"),
         rec("/products/y", "Mozilla/5.0 Chrome/129.0", ip="headless"),               # no browser headers
@@ -67,11 +68,11 @@ def test_groups_requests_and_classifies(client):
         rec("/cart/add", "curl/8", ip="poster", method="POST"),                        # writes: dropped
     ])
     assert r.status_code == 200, r.text
-    assert r.json() == {"stored": 6, "skipped": 2}
+    assert r.json() == {"stored": 7, "skipped": 2}
 
     s = client.get(f"/metrics/sessions?shop={SHOP}&days=7&limit=50", headers=AUTH).json()
     by_agent = {x["agent"]: x for x in s["sessions"]}
-    assert s["total"] == 5  # GPTBot's two requests are one session
+    assert s["total"] == 5  # GPTBot's three requests, each < 30 min apart, are one session
     assert by_agent["GPTBot"]["class"] == "crawler"
     assert by_agent["ChatGPT"]["class"] == "assistant"
     classes = sorted(x["class"] for x in s["sessions"])
@@ -80,6 +81,16 @@ def test_groups_requests_and_classifies(client):
     signed = next(x for x in s["sessions"] if x["landing_path"] == "/products/z")
     detail = client.get(f"/metrics/sessions/{signed['session_key']}?shop={SHOP}", headers=AUTH).json()
     assert any("Web Bot Auth" in x["text"] for x in detail["reasons"])
+
+
+def test_session_ends_after_30_minutes_idle(client):
+    shop = "idle-store.myshopify.com"
+    ua = "Mozilla/5.0; compatible; ClaudeBot/1.0"
+    post(client, [rec("/robots.txt", ua, ip="c", ts=TS),
+                  rec("/sitemap.xml", ua, ip="c", ts=TS + 29 * 60_000),          # same session
+                  rec("/llms.txt", ua, ip="c", ts=TS + 29 * 60_000 + 31 * 60_000)], shop=shop)  # new one
+    s = client.get(f"/metrics/sessions?shop={shop}&days=7", headers=AUTH).json()
+    assert s["total"] == 2
 
 
 def test_edge_turns_on_coverage_and_agent_files(client):

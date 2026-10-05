@@ -147,3 +147,19 @@ def test_demo_referrals_orders_sessions(client):
     threats = client.get("/metrics/threats?shop=demo", headers=AUTH).json()
     assert threats["synthetic"] is False  # real icelabs results even in demo
     assert threats["kpis"]["runs"] == 8
+
+
+def test_cors_allows_each_listed_storefront(monkeypatch):
+    """SITE_ORIGIN takes a list; each storefront gets CORS, others don't."""
+    import importlib
+    import app.main as main_mod
+    monkeypatch.setenv("SITE_ORIGIN", "https://icelabs-bdy57pfy.myshopify.com, https://checkskincare.com/")
+    m = importlib.reload(main_mod)
+    with TestClient(m.app) as c:
+        def preflight(origin):
+            return c.options("/ingest", headers={"Origin": origin, "Access-Control-Request-Method": "POST"})
+        assert preflight("https://checkskincare.com").headers.get("access-control-allow-origin") == "https://checkskincare.com"
+        assert preflight("https://icelabs-bdy57pfy.myshopify.com").status_code == 200
+        assert preflight("https://evil.example").status_code == 400
+    monkeypatch.delenv("SITE_ORIGIN")
+    importlib.reload(main_mod)

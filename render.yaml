@@ -31,8 +31,9 @@ services:
         fromDatabase:
           name: agent-trust-db
           property: connectionString
+      # Comma-separated storefront origins allowed to post tracker data.
       - key: SITE_ORIGIN
-        value: https://icelabs-bdy57pfy.myshopify.com
+        value: https://icelabs-bdy57pfy.myshopify.com,https://checkskincare.com,https://www.checkskincare.com
       - key: SHOPIFY_STORE_DOMAIN
         value: icelabs-bdy57pfy.myshopify.com
       # Set these two in the Render dashboard after deploy — not committed

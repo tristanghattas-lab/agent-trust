@@ -44,10 +44,14 @@ app = FastAPI(title="Agent Trust & Commerce Intelligence — ingestion API")
 
 # Loose CORS for v0 — tighten to SITE_ORIGIN once this is pointed at the
 # real United Cellars domain.
-site_origin = os.getenv("SITE_ORIGIN", "*")
+# Comma-separated list of storefront origins allowed to post tracker data,
+# e.g. "https://icelabs-bdy57pfy.myshopify.com,https://checkskincare.com".
+# "*" (the default) allows any origin.
+_raw_origins = [o.strip().rstrip("/") for o in os.getenv("SITE_ORIGIN", "*").split(",") if o.strip()]
+allowed_origins = ["*"] if not _raw_origins or "*" in _raw_origins else _raw_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[site_origin] if site_origin != "*" else ["*"],
+    allow_origins=allowed_origins,
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
@@ -67,7 +71,7 @@ class OriginLoggingMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin")
-        if origin and origin != site_origin and site_origin != "*":
+        if origin and "*" not in allowed_origins and origin not in allowed_origins:
             cors_logger.info(
                 "Cross-origin request (blocked by CORS): origin=%s method=%s path=%s ua=%s",
                 origin,

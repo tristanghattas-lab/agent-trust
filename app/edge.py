@@ -18,7 +18,7 @@ The Worker signs each body with HMAC-SHA256. Print a store's key with
 `python -m scripts.edge_key <shop>`.
 
 Sessions: requests are grouped into one session per (store, hashed IP, user
-agent, 30-minute window), stored with js_executed = false, and classified
+agent), ending after 30 minutes of inactivity, stored with js_executed = false, and classified
 with the usual rules plus the edge signals (classify.py rule 9).
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ import hmac
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -126,20 +126,28 @@ def is_browser_like(r: EdgeRecord) -> bool:
     )
 
 
-def session_key_for(shop: str, r: EdgeRecord) -> str:
-    window = (r.ts // 1000) // SESSION_WINDOW_SECONDS
-    digest = hashlib.sha256(f"{shop}|{r.ip_hash}|{r.ua or ''}|{window}".encode()).hexdigest()
-    return f"edge_{digest[:20]}"
-
-
 def apply_record(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel:
-    key = session_key_for(shop, r)
+    """Add one request to its session: the same store, hashed IP and user
+    agent, with the previous request less than 30 minutes earlier (an
+    inactivity timeout, so sessions don't split at fixed clock boundaries)."""
     seen_at = datetime.fromtimestamp(r.ts / 1000, tz=timezone.utc)
-    s = db.query(SessionModel).filter(SessionModel.session_key == key).one_or_none()
+    s = (
+        db.query(SessionModel)
+        .filter(
+            SessionModel.shop_domain == shop,
+            SessionModel.ip == r.ip_hash,  # the Worker's hash, never a raw IP
+            SessionModel.user_agent == r.ua,
+            SessionModel.js_executed.is_(False),
+            SessionModel.last_seen >= seen_at - timedelta(seconds=SESSION_WINDOW_SECONDS),
+        )
+        .order_by(SessionModel.last_seen.desc())
+        .first()
+    )
     if s is None:
+        digest = hashlib.sha256(f"{shop}|{r.ip_hash}|{r.ua or ''}|{r.ts}".encode()).hexdigest()
         s = SessionModel(
-            session_key=key, shop_domain=shop, user_agent=r.ua, referrer=r.referer,
-            landing_path=r.path, first_seen=seen_at, last_seen=seen_at,
+            session_key=f"edge_{digest[:20]}", shop_domain=shop, ip=r.ip_hash, user_agent=r.ua,
+            referrer=r.referer, landing_path=r.path, first_seen=seen_at, last_seen=seen_at,
             event_count=0, js_executed=False,
         )
         db.add(s)
