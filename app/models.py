@@ -39,6 +39,9 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     session_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    # Which store this belongs to (e.g. "icelabs-bdy57pfy.myshopify.com").
+    # Every metrics query filters on it; one database serves many stores.
+    shop_domain: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -104,6 +107,9 @@ class Order(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     shopify_order_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    # Which store this belongs to (e.g. "icelabs-bdy57pfy.myshopify.com").
+    # Every metrics query filters on it; one database serves many stores.
+    shop_domain: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     session_key: Mapped[str | None] = mapped_column(
         String, ForeignKey("sessions.session_key"), nullable=True, index=True
     )
@@ -157,6 +163,9 @@ class ThreatTestRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Which store this belongs to (e.g. "icelabs-bdy57pfy.myshopify.com").
+    # Every metrics query filters on it; one database serves many stores.
+    shop_domain: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     agent_surface: Mapped[str] = mapped_column(String)
     # "chatgpt" | "perplexity" | "browser-use" | "gemini" | ...

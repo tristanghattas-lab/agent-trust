@@ -27,6 +27,8 @@ from app.models import Session as SessionModel
 from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
+from app.metrics_api import router as metrics_router
+from app.shops import DEFAULT_SHOP, normalise_shop
 
 # Uvicorn only configures its own loggers; without a handler here, INFO
 # records from these app loggers fall through to Python's last-resort
@@ -76,6 +78,7 @@ class OriginLoggingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(OriginLoggingMiddleware)
+app.include_router(metrics_router)
 
 
 @app.on_event("startup")
@@ -108,6 +111,12 @@ def _migrate_new_columns() -> None:
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS input_count INTEGER",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS keyless_input_count INTEGER",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS keydown_count INTEGER",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS shop_domain VARCHAR",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS shop_domain VARCHAR",
+        "ALTER TABLE threat_test_runs ADD COLUMN IF NOT EXISTS shop_domain VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_sessions_shop_domain ON sessions (shop_domain)",
+        "CREATE INDEX IF NOT EXISTS ix_orders_shop_domain ON orders (shop_domain)",
+        "CREATE INDEX IF NOT EXISTS ix_threat_test_runs_shop_domain ON threat_test_runs (shop_domain)",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
@@ -115,6 +124,13 @@ def _migrate_new_columns() -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        # Everything recorded before stores were tagged came from the one
+        # test store. Idempotent: only touches untagged rows.
+        for table in ("sessions", "orders", "threat_test_runs"):
+            conn.execute(
+                text(f"UPDATE {table} SET shop_domain = :shop WHERE shop_domain IS NULL"),
+                {"shop": DEFAULT_SHOP},
+            )
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -149,6 +165,7 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
     if session is None:
         session = SessionModel(
             session_key=event.session_key,
+            shop_domain=normalise_shop(event.shop) or DEFAULT_SHOP,
             user_agent=event.user_agent,
             referrer=event.referrer,
             landing_path=event.landing_path,
@@ -255,7 +272,7 @@ UA_MATCH_WINDOW = timedelta(minutes=30)
 
 
 def match_session_by_user_agent(
-    db: DBSession, user_agent: str | None, now: datetime
+    db: DBSession, user_agent: str | None, now: datetime, shop: str | None = None
 ) -> str | None:
     """Fuzzy order -> session match for orders with no cart-attribute tag.
 
@@ -267,15 +284,13 @@ def match_session_by_user_agent(
     """
     if not user_agent:
         return None
-    candidates = (
-        db.query(SessionModel.session_key)
-        .filter(
-            SessionModel.user_agent == user_agent,
-            SessionModel.last_seen >= now - UA_MATCH_WINDOW,
-        )
-        .limit(2)
-        .all()
+    query = db.query(SessionModel.session_key).filter(
+        SessionModel.user_agent == user_agent,
+        SessionModel.last_seen >= now - UA_MATCH_WINDOW,
     )
+    if shop:
+        query = query.filter(SessionModel.shop_domain == shop)
+    candidates = query.limit(2).all()
     return candidates[0][0] if len(candidates) == 1 else None
 
 
@@ -285,6 +300,7 @@ async def shopify_order_webhook(
     db: DBSession = Depends(get_db),
     x_shopify_hmac_sha256: str | None = Header(default=None),
     x_shopify_topic: str | None = Header(default=None),
+    x_shopify_shop_domain: str | None = Header(default=None),
 ):
     raw_body = await request.body()
     secret = get_webhook_secret()
@@ -309,11 +325,12 @@ async def shopify_order_webhook(
         # delivery as a no-op rather than erroring or double-counting.
         return {"status": "already_recorded", "order_id": existing.id}
 
+    shop = normalise_shop(x_shopify_shop_domain) or DEFAULT_SHOP
     session_key = order_in.session_key
     match_method = "cart_attribute" if session_key else None
     if session_key is None:
         session_key = match_session_by_user_agent(
-            db, order_in.client_user_agent, datetime.now(timezone.utc)
+            db, order_in.client_user_agent, datetime.now(timezone.utc), shop
         )
         if session_key is not None:
             match_method = "user_agent_time"
@@ -323,6 +340,7 @@ async def shopify_order_webhook(
 
     order = Order(
         shopify_order_id=order_in.shopify_order_id,
+        shop_domain=shop,
         session_key=session_key,
         session_match_method=match_method,
         order_value=order_in.order_value,
@@ -367,7 +385,9 @@ def order_evidence(email_prefix: str, db: DBSession = Depends(get_db)):
 
 @app.post("/threat-runs")
 def log_threat_run(run: ThreatTestRunIn, db: DBSession = Depends(get_db)):
-    row = ThreatTestRun(**run.model_dump())
+    data = run.model_dump()
+    data["shop_domain"] = normalise_shop(data.pop("shop")) or DEFAULT_SHOP
+    row = ThreatTestRun(**data)
     db.add(row)
     db.commit()
     db.refresh(row)

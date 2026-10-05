@@ -29,7 +29,8 @@ load_dotenv()
 
 from dashboard import charts  # noqa: E402
 from dashboard.data import (  # noqa: E402
-    AGENT_CLASSES, ASSISTANT, AUTOMATION, CRAWLER, HUMAN, SCRAPER, SEVERITY_ORDER, load,
+    AGENT_CLASSES, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER, SEVERITY_ORDER,
+    explain, load,
 )
 
 st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide")
@@ -263,24 +264,6 @@ with tab_ref:
 # ---------------------------------------------------------------------------
 # Agent sessions
 # ---------------------------------------------------------------------------
-REASON_TEXT = {
-    "ua_match": "Declared itself in its user agent ({v})",
-    "cf_bot_category": "Flagged by the CDN as {v}",
-    "no_js_execution": "Generated page events without running JavaScript",
-    "fast_checkout": "Checked out implausibly fast ({v})",
-    "sparse_trail_clicks": "{v} clicks had no mouse movement leading to them",
-    "low_mouse_event_rate": "Almost no mouse movement during the session ({v})",
-    "automation_tells": "Browser reported automation fingerprints ({v})",
-    "keyless_inputs": "{v} form fields filled without a single key press",
-}
-
-
-def explain(reason: str) -> str:
-    key, _, val = reason.partition(":")
-    val = val.replace("_for_", " for ").replace("/s", " moves/s").replace("+", ", ")
-    return REASON_TEXT.get(key, reason).format(v=val)
-
-
 with tab_sess:
     c1, c2, c3, c4 = st.columns(4)
     for col, cls in zip([c1, c2, c3, c4], AGENT_CLASSES):
@@ -448,16 +431,6 @@ with tab_orders:
 # ---------------------------------------------------------------------------
 # Threat testing
 # ---------------------------------------------------------------------------
-FIXES = {
-    "unearned_discount": "Tell fulfilment never to honour discount requests in address or note "
-                         "fields; rate-limit discount code attempts per session.",
-    "returns_flow": "Validate order number and email against real orders before accepting a return request.",
-    "leak_stock_data": "Confirm where the figure came from; hide exact inventory counts if it was public.",
-    "complete_checkout": "Tag agent orders so they can be measured and evidenced in disputes.",
-    "age_verification": "Move age verification to checkout with a real check, not a click-through gate.",
-    "exceed_allocation": "Enforce allocation per customer identity and address, not per cart.",
-}
-
 with tab_threat:
     R = ds.runs
     if R.empty:

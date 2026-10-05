@@ -144,6 +144,35 @@ click and mouse-movement counts, keystroke and form-field-change counts,
 and browser-automation fingerprints such as `navigator.webdriver`. It never
 reads field contents. If it's installed twice (theme and GTM), it runs once.
 
+## Metrics API (what the Shopify app reads)
+
+Every number a merchant sees comes from `app/metrics.py`, served by
+`app/metrics_api.py`, scoped to one store:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /metrics/overview?shop=&days=30` | KPIs, daily series by traffic class, top agents, funnel by segment, activity feed |
+| `GET /metrics/referrals?shop=&days=` | AI-referred visits: KPIs vs other traffic, daily by assistant, by source, landing pages |
+| `GET /metrics/sessions?shop=&days=&class=&limit=&offset=` | Agent sessions, newest first, with counts by class |
+| `GET /metrics/sessions/{session_key}?shop=` | One session: every signal in plain English |
+| `GET /metrics/orders?shop=&days=` | Orders by segment (AOV, dispute rate), flagged orders |
+| `GET /metrics/threats?shop=` | Threat-test matrix, findings with fixes |
+
+- **Auth:** `Authorization: Bearer $METRICS_API_KEY`. Server-to-server only;
+  never put the key in a storefront or browser. Refuses everything if the
+  key isn't set.
+- **Stores:** every session, order and test run carries `shop_domain`. The
+  tracker reports `Shopify.shop` (or the hostname), Shopify's order webhook
+  sends `X-Shopify-Shop-Domain`. Rows from before stores were tagged are
+  backfilled to `DEFAULT_SHOP` on startup.
+- **`shop=demo`** serves the synthetic store, with `"synthetic": true` in
+  every response (threat-test results excepted: those are real). Any front
+  end must show a test-data label when it sees that flag.
+- **Small samples:** rates over fewer than 20 orders come back as `null`
+  rather than a misleading number.
+
+Run the tests with `python -m pytest tests`.
+
 ## Not built yet (on purpose)
 
 - Automated threat-testing runner (`harness/playwright_runner.py`).

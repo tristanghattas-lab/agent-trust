@@ -42,6 +42,14 @@ services:
         sync: false
       - key: SHOPIFY_ADMIN_API_TOKEN
         sync: false
+      # Bearer key for /metrics/* (the Shopify app's backend and the internal
+      # dashboard send it). Render generates it; copy it from the
+      # Environment tab when wiring up a client.
+      - key: METRICS_API_KEY
+        generateValue: true
+      # Store that untagged rows and untagged test runs belong to.
+      - key: DEFAULT_SHOP
+        value: icelabs-bdy57pfy.myshopify.com
 
   - type: web
     name: agent-trust-dashboard

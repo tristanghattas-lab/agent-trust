@@ -5,6 +5,9 @@ class IngestEvent(BaseModel):
     """Payload the capture snippet posts on each pageview/interaction batch."""
 
     session_key: str
+    # The store the tracker is running on: Shopify.shop when available,
+    # otherwise the page's hostname. Normalised server-side.
+    shop: str | None = None
     user_agent: str | None = None
     referrer: str | None = None
     landing_path: str | None = None
@@ -64,3 +67,4 @@ class ThreatTestRunIn(BaseModel):
     exploit_found: bool = False
     friction_notes: str | None = None
     tester: str | None = None
+    shop: str | None = None  # defaults to DEFAULT_SHOP server-side

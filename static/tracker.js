@@ -271,6 +271,7 @@
       Object.assign(
         {
           session_key: sessionKey,
+          shop: (window.Shopify && window.Shopify.shop) || location.hostname,
           user_agent: navigator.userAgent,
           referrer: document.referrer,
           landing_path: location.pathname,
