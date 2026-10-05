@@ -26,7 +26,7 @@ import hmac
 import os
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 
 from app import metrics
 from app.db import engine
@@ -57,8 +57,17 @@ Days = Query(30, ge=1, le=365)
 deps = [Depends(require_api_key)]
 
 
+def refresh_cloudflare(shop: str, background: BackgroundTasks) -> None:
+    """Keep Cloudflare analytics fresh without a scheduler: when a store's
+    overview is read, sync it in the background if it's over an hour old."""
+    if shop != DEMO_SHOP:
+        from app.cloudflare import sync_if_stale
+        background.add_task(sync_if_stale, shop)
+
+
 @router.get("/overview", dependencies=deps)
-def get_overview(shop: str = Depends(resolve_shop), days: int = Days):
+def get_overview(background: BackgroundTasks, shop: str = Depends(resolve_shop), days: int = Days):
+    refresh_cloudflare(shop, background)
     return metrics.overview(metrics.load_frames(engine, shop, days))
 
 

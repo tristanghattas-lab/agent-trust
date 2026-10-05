@@ -69,3 +69,74 @@ def shops() -> list[str]:
         except Exception:  # database asleep or unreachable: demo still works
             live = []
     return live + [DEMO_SHOP]
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare connection (Connections page). Same API or in-process split.
+# ---------------------------------------------------------------------------
+def _cf_http(method: str, path: str = "", **kw) -> dict:
+    r = requests.request(method, f"{API_URL}/integrations/cloudflare{path}",
+                         headers={"Authorization": f"Bearer {API_KEY}"}, timeout=120, **kw)
+    if r.status_code >= 400:
+        raise RuntimeError((r.json() or {}).get("detail", r.text) if r.headers.get(
+            "content-type", "").startswith("application/json") else r.text)
+    return r.json()
+
+
+def _cf_local(fn):
+    from app import cloudflare
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        return fn(cloudflare, db)
+    except cloudflare.CloudflareError as exc:
+        raise RuntimeError(str(exc)) from exc
+    finally:
+        db.close()
+
+
+def connections_available() -> bool:
+    return bool(API_URL and API_KEY) or _engine() is not None
+
+
+def cf_status(shop: str) -> dict:
+    if API_URL and API_KEY:
+        return _cf_http("GET", params={"shop": shop})
+    return _cf_local(lambda cf, db: cf.status(cf._get(db, shop)))
+
+
+def cf_connect(shop: str, zone_id: str, api_token: str) -> dict:
+    st.cache_data.clear()
+    if API_URL and API_KEY:
+        return _cf_http("POST", json={"shop": shop, "zone_id": zone_id, "api_token": api_token})
+    return _cf_local(lambda cf, db: cf.connect(db, shop, zone_id, api_token))
+
+
+def cf_sync(shop: str) -> dict:
+    st.cache_data.clear()
+    if API_URL and API_KEY:
+        return _cf_http("POST", "/sync", params={"shop": shop})
+    return _cf_local(lambda cf, db: cf.sync(db, cf._get(db, shop)))
+
+
+def cf_disconnect(shop: str) -> dict:
+    st.cache_data.clear()
+    if API_URL and API_KEY:
+        return _cf_http("DELETE", params={"shop": shop})
+
+    def drop(cf, db):
+        from app.models import EdgeAggregate, Integration
+        db.query(EdgeAggregate).filter_by(shop_domain=shop, source="cloudflare").delete()
+        db.query(Integration).filter_by(shop_domain=shop, kind="cloudflare").delete()
+        db.commit()
+        return {"connected": False}
+    return _cf_local(drop)
+
+
+def refresh_in_background(shop: str) -> None:
+    """In-process mode: keep Cloudflare analytics fresh like the API does."""
+    if shop == DEMO_SHOP or (API_URL and API_KEY) or _engine() is None:
+        return
+    import threading
+    from app.cloudflare import sync_if_stale
+    threading.Thread(target=sync_if_stale, args=(shop,), daemon=True).start()

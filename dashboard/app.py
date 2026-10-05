@@ -27,7 +27,7 @@ st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
 ui.inject_css()
 
-PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing"]
+PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing", "Connections"]
 
 
 def plot(fig) -> None:
@@ -110,11 +110,22 @@ def empty(msg: str) -> None:
 # Overview
 # ---------------------------------------------------------------------------
 if page == "Overview":
+    client.refresh_in_background(shop)
     d = load("overview")
     header("Overview", d)
     k = d.get("kpis")
     if not k:
-        empty("No traffic recorded for this store yet. Install the tracker to start.")
+        bots = d.get("edge_agents") or []
+        if not bots:
+            empty("No traffic recorded for this store yet. Install the tracker, or connect Cloudflare "
+                  "under Connections.")
+            st.stop()
+        # Cloudflare connected, tracker not yet installed: show what the edge sees.
+        with st.container(border=True):
+            ui.card_title("Bots and fetchers", "Requests per agent from Cloudflare analytics. Install the "
+                          "tracker to see browser-based agents, AI referrals and the full overview.")
+            plot(charts.hbars([b["name"] for b in bots], [b["requests"] for b in bots],
+                              [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots], fmt=",d"))
         st.stop()
     daily = d["daily"]
     chg = k["agent_share_change_pts"] or 0
@@ -142,7 +153,10 @@ if page == "Overview":
 
     left, right = st.columns([2, 1], gap="medium")
     with left, st.container(border=True):
-        ui.card_title("Agent traffic", "Sessions per day by class. People excluded so the mix is visible.")
+        unit = (d.get("coverage") or {}).get("edge_unit")
+        ui.card_title("Agent traffic", "Per day by class. People excluded so the mix is visible."
+                      + (" Crawler and scraper bars are requests (Cloudflare analytics); the rest are "
+                         "sessions." if unit == "requests" else " Sessions."))
         plot(charts.agent_traffic(daily, shown))
     with right, st.container(border=True):
         ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
@@ -170,6 +184,11 @@ if page == "Overview":
         if top:
             plot(charts.hbars([t["name"] for t in top], [t["sessions"] for t in top],
                               [charts.CLASS_COLOURS[t["class"]] for t in top], fmt=",d"))
+        bots = d.get("edge_agents") or []
+        if bots and (d.get("coverage") or {}).get("edge_unit") == "requests":
+            ui.card_title("Bots and fetchers", "Requests per agent, Cloudflare analytics.")
+            plot(charts.hbars([b["name"] for b in bots[:8]], [b["requests"] for b in bots[:8]],
+                              [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots[:8]], fmt=",d"))
 
 # ---------------------------------------------------------------------------
 # AI referrals
@@ -222,13 +241,18 @@ elif page == "Agent sessions":
     base = load("sessions", limit=1)
     header("Agent sessions", base)
     counts = base.get("counts_by_class") or {}
-    if not counts:
+    req_counts = base.get("request_counts_by_class") or {}
+    if not counts and not req_counts:
         empty("No agent sessions recorded for this store yet.")
         st.stop()
     shown = visible_classes(base)
     ui.kpi_row([
-        ui.kpi(charts.CLASS_LABELS[c], f"{counts.get(c, 0):,}" if c in shown else "—",
-               None if c in shown else "needs edge logs", colour=charts.CLASS_COLOURS[c])
+        ui.kpi(charts.CLASS_LABELS[c],
+               "—" if c not in shown else (f"{counts.get(c, 0):,}" if counts.get(c) or not req_counts.get(c)
+                                           else f"{req_counts[c]:,}"),
+               "needs edge data" if c not in shown else
+               ("requests · Cloudflare" if not counts.get(c) and req_counts.get(c) else "sessions"),
+               colour=charts.CLASS_COLOURS[c])
         for c in ["assistant", "automation", "crawler", "scraper"]
     ])
     if "crawler" not in shown:
@@ -257,13 +281,14 @@ elif page == "Agent sessions":
         files = load("overview").get("agent_files") or []
         if files:
             with st.container(border=True):
-                ui.card_title("What agents read", "Sessions fetching agent-facing files, from edge logs. "
+                ui.card_title("What agents read", "Fetches of agent-facing files, from edge data. "
                               "agents.md and llms.txt tell agents how to use the store; products.json "
                               "is a favourite of price scrapers.")
                 cols = st.columns(min(len(files), 6))
                 for col, fl in zip(cols, files[:6]):
-                    tops = ", ".join(f"{t['agent']} ({t['sessions']})" for t in fl["top_agents"][:3])
-                    col.markdown(ui.kpi(fl["file"], f"{fl['sessions']:,}", f"{fl['agents']} agents"),
+                    tops = ", ".join(f"{t['agent']} ({t['count']})" for t in fl["top_agents"][:3])
+                    col.markdown(ui.kpi(fl["file"], f"{fl['count']:,}",
+                                        f"{fl['unit']} · {fl['agents']} agents"),
                                  unsafe_allow_html=True)
                     col.markdown(f'<div class="at-card-sub">{ui.esc(tops)}</div>', unsafe_allow_html=True)
 
@@ -417,3 +442,86 @@ elif page == "Threat testing":
                 + (f'<div class="at-fix">Fix: {ui.esc(f["fix"])}</div>' if f["fix"] else "")
                 + "</div>")
         st.markdown("".join(rows), unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Connections
+# ---------------------------------------------------------------------------
+elif page == "Connections":
+    ui.page_header("Connections", shop_label(shop), demo=False, live_label="SETUP")
+    if not client.connections_available():
+        empty("No database or API configured, so connections can't be managed from here.")
+        st.stop()
+
+    from app.shops import normalise_shop
+    entered = st.text_input("Store (myshopify domain)", value="" if shop == DEMO_SHOP else shop,
+                            help="Pick a store in the sidebar, or type a new one to connect it first.")
+    shop = normalise_shop(entered) or ""
+    if not shop:
+        empty("Enter the store's myshopify domain to manage its connections.")
+        st.stop()
+
+    with st.container(border=True):
+        ui.card_title("Cloudflare analytics", "Two-minute setup, nothing to deploy. Shows AI crawlers, "
+                      "assistants and scrapers as hourly request counts, and who reads your agent files.")
+        try:
+            status = client.cf_status(shop)
+        except Exception as exc:
+            st.error(f"Couldn't load status: {exc}")
+            status = {"connected": False}
+
+        if status.get("connected"):
+            when = status.get("synced_through") or "not yet"
+            ui.kv_list({
+                "Status": "Error: " + status["last_error"] if status.get("last_error") else "Connected",
+                "Zone ID": status.get("zone_id") or "—",
+                "Data through": when.replace("T", " ")[:16] + (" UTC" if "T" in when else ""),
+                "Last sync": (status.get("last_sync_at") or "—").replace("T", " ")[:16],
+            })
+            a, b, _ = st.columns([1, 1, 3])
+            if a.button("Sync now"):
+                with st.spinner("Pulling from Cloudflare…"):
+                    try:
+                        res = client.cf_sync(shop)
+                        if res.get("error"):
+                            st.error(res["error"])
+                        else:
+                            st.success(f"Synced {res['rows']:,} rows.")
+                    except Exception as exc:
+                        st.error(str(exc))
+            if b.button("Disconnect"):
+                client.cf_disconnect(shop)
+                client.shops.clear()
+                st.rerun()
+        else:
+            st.markdown(
+                '<div class="at-card-sub" style="line-height:1.6">'
+                "1. In Cloudflare, open <b>My Profile → API Tokens → Create Token → Custom token</b>.<br>"
+                "2. Permission: <b>Zone → Analytics → Read</b>. Zone resources: <b>Include → Specific zone →</b> "
+                "the store's domain. Create it and copy the token.<br>"
+                "3. Copy the <b>Zone ID</b> from the domain's Overview page (right-hand column, API section).<br>"
+                "The token is tested before it's saved, stored encrypted, and never shown again.</div>",
+                unsafe_allow_html=True)
+            with st.form("cf_connect"):
+                zone = st.text_input("Zone ID", placeholder="32 hex characters")
+                token = st.text_input("API token", type="password")
+                if st.form_submit_button("Connect Cloudflare"):
+                    with st.spinner("Testing the token and pulling the last 7 days…"):
+                        try:
+                            res = client.cf_connect(shop, zone.strip(), token.strip())
+                            client.shops.clear()
+                            if res.get("last_error"):
+                                st.warning(f"Connected, but the first sync failed: {res['last_error']}")
+                            else:
+                                st.success("Connected. Crawler and agent-file data now appear on the "
+                                           "Overview and Agent sessions pages.")
+                        except Exception as exc:
+                            st.error(str(exc))
+
+    with st.container(border=True):
+        ui.card_title("Edge Worker (full detail)", "Per-session detail for traffic that never runs "
+                      "JavaScript: signed agents, HTTP libraries, headless clients. Needs a Cloudflare "
+                      "Worker deployed on the store's domain.")
+        st.markdown('<div class="at-card-sub">Setup: <code>python -m scripts.edge_key '
+                    f'{ui.esc(shop)}</code>, then follow <code>edge/README.md</code>.</div>',
+                    unsafe_allow_html=True)
+

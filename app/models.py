@@ -189,3 +189,37 @@ class ThreatTestRun(Base):
     exploit_found: Mapped[bool] = mapped_column(Boolean, default=False)
     friction_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     tester: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Integration(Base):
+    """A store's connection to an outside data source (e.g. Cloudflare
+    analytics). Credentials are stored encrypted (app/secrets_box.py) and are
+    never returned by any endpoint."""
+
+    __tablename__ = "integrations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    kind: Mapped[str] = mapped_column(String)  # "cloudflare"
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)  # Cloudflare zone ID
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class EdgeAggregate(Base):
+    """Hourly request counts per user agent and path, from a source that
+    gives counts rather than individual requests (Cloudflare analytics).
+    Not sessions: dashboards label these as requests."""
+
+    __tablename__ = "edge_aggregates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    source: Mapped[str] = mapped_column(String, default="cloudflare")
+    hour: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requests: Mapped[int] = mapped_column(Integer, default=0)

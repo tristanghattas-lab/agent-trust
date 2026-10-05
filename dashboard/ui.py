@@ -201,8 +201,8 @@ def page_header(title: str, crumb: str, demo: bool, note: str = "",
         )
 
 
-COVERAGE_NAMES = {"tracker": "Browser tracker", "orders": "Order feed",
-                  "edge": "Edge logs", "pixel": "Checkout pixel"}
+COVERAGE_NAMES = {"tracker": "Browser tracker", "orders": "Order feed", "edge": "Edge Worker",
+                  "cloudflare": "Cloudflare analytics", "pixel": "Checkout pixel"}
 
 
 def coverage_strip(cov: dict | None) -> None:
@@ -217,9 +217,11 @@ def coverage_strip(cov: dict | None) -> None:
     )
     if cov.get("simulated"):
         note = "Simulated: all sources shown so every view is populated."
+    elif not cov.get("edge") and cov.get("cloudflare"):
+        note = ("Crawler and scraper figures are request counts from Cloudflare analytics, not sessions.")
     elif not cov.get("edge"):
-        note = ("Fetch-only assistants, crawlers and scrapers never run JavaScript, so only edge logs "
-                "can see them. They're hidden here, not zero.")
+        note = ("Fetch-only assistants, crawlers and scrapers never run JavaScript, so only edge data "
+                "can see them. They're hidden here, not zero. Connect Cloudflare under Connections.")
     else:
         note = ""
     st.markdown(f'<div class="at-cov"><span class="at-cov-label">Data sources</span>{chips}'

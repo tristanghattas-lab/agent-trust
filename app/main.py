@@ -27,6 +27,7 @@ from app.models import Session as SessionModel
 from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
+from app.cloudflare import router as cloudflare_router
 from app.edge import router as edge_router
 from app.metrics_api import router as metrics_router
 from app.shops import DEFAULT_SHOP, normalise_shop
@@ -85,6 +86,7 @@ class OriginLoggingMiddleware(BaseHTTPMiddleware):
 app.add_middleware(OriginLoggingMiddleware)
 app.include_router(metrics_router)
 app.include_router(edge_router)
+app.include_router(cloudflare_router)
 
 
 @app.on_event("startup")

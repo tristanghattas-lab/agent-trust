@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.analytics import (
-    AGENT_CLASSES, AI_CHANNEL, agent_file, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER,
+    AGENT_CLASSES, AI_CHANNEL, agent_file, classify_user_agent, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER,
     SEVERITY_ORDER, enrich_frames, explain,
 )
 from app.shops import DEMO_SHOP
@@ -46,7 +46,8 @@ AGENT_ORDER_CLASSES = AGENT_CLASSES + [AI_CHANNEL]
 SOURCES = {
     "tracker": "Browser tracker: people and agents that run a real browser",
     "orders": "Order feed: every order, including ones placed inside AI assistants",
-    "edge": "Edge logs (Cloudflare): fetch-only assistants, crawlers and scrapers",
+    "edge": "Edge Worker (Cloudflare): per-session detail for fetch-only assistants, crawlers and scrapers",
+    "cloudflare": "Cloudflare analytics: hourly request counts for AI crawlers, assistants and scrapers",
     "pixel": "Checkout pixel: checkout steps for browser-based visitors",
 }
 EDGE_ONLY_CLASSES = {"crawler", "scraper"}
@@ -95,6 +96,8 @@ class Frames:
     end: pd.Timestamp
     days: int
     coverage: dict | None = None
+    # Hourly request counts from Cloudflare analytics (not sessions).
+    agg: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @lru_cache(maxsize=2)
@@ -131,9 +134,30 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
             "WHERE o.shop_domain = :shop AND o.created_at > :start"
         )
         runs = q("SELECT * FROM threat_test_runs WHERE shop_domain = :shop", {"shop": shop})
+        try:
+            agg = q("SELECT hour, user_agent, path, requests FROM edge_aggregates "
+                    "WHERE shop_domain = :shop AND hour > :start")
+        except Exception:  # table not created yet on an older database
+            agg = pd.DataFrame()
         coverage = _live_coverage(conn, shop)
     s, o, _, r = enrich_frames(sessions, orders, outcomes, runs)
-    return Frames(shop, "live", s, o, r, start, end, days, coverage)
+    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg))
+
+
+def _enrich_agg(agg: pd.DataFrame) -> pd.DataFrame:
+    """Name and class each user agent; drop rows that aren't agent-like and
+    aren't agent-file fetches (an ordinary browser reading robots.txt still
+    counts as an agent-file fetch, under "Unidentified")."""
+    if agg.empty:
+        return agg
+    agg = agg.copy()
+    agg["hour"] = pd.to_datetime(agg["hour"], utc=True)
+    agg["date"] = agg["hour"].dt.tz_convert("Australia/Sydney").dt.date
+    info = agg["user_agent"].map(classify_user_agent)
+    agg["agent"] = info.map(lambda x: x[0] if x else "Unidentified")
+    agg["class"] = info.map(lambda x: x[1] if x else None)
+    agg["file"] = agg["path"].map(agent_file)
+    return agg[agg["class"].notna() | agg["file"].notna()]
 
 
 def _live_coverage(conn, shop: str) -> dict:
@@ -146,28 +170,47 @@ def _live_coverage(conn, shop: str) -> dict:
         "tracker": exists("SELECT 1 FROM sessions WHERE shop_domain = :shop AND js_executed LIMIT 1"),
         "orders": exists("SELECT 1 FROM orders WHERE shop_domain = :shop LIMIT 1"),
         "edge": exists("SELECT 1 FROM sessions WHERE shop_domain = :shop AND NOT js_executed LIMIT 1"),
+        "cloudflare": exists("SELECT 1 FROM integrations WHERE shop_domain = :shop "
+                             "AND kind = 'cloudflare' AND last_error IS NULL "
+                             "AND synced_through IS NOT NULL LIMIT 1") if _has_table(conn, "integrations") else False,
         "pixel": False,  # not built yet
         "simulated": False,
     }
 
 
+def _has_table(conn, name: str) -> bool:
+    from sqlalchemy import inspect
+    return inspect(conn).has_table(name)
+
+
 def coverage_block(f: Frames) -> dict:
     cov = dict(f.coverage or {})
-    visible = ["assistant", "automation"] + (["crawler", "scraper"] if cov.get("edge") else [])
+    edge_any = cov.get("edge") or cov.get("cloudflare")
+    visible = ["assistant", "automation"] + (["crawler", "scraper"] if edge_any else [])
     return {
         **cov,
         "sources": [{"key": k, "label": v, "connected": bool(cov.get(k))} for k, v in SOURCES.items()],
         "visible_agent_classes": visible,
+        # Crawler/scraper figures come in sessions (edge Worker) or, with
+        # only Cloudflare analytics, in requests. Front ends must say which.
+        "edge_unit": "sessions" if cov.get("edge") else ("requests" if cov.get("cloudflare") else None),
         "hidden_agent_classes": [c for c in ("crawler", "scraper") if c not in visible],
     }
 
 
 def list_shops(engine: Engine) -> list[str]:
-    """Stores with any recorded traffic, most recently active first."""
+    """Stores with any data (tracker sessions, orders or a connection), most
+    recently active first."""
+    parts = [
+        "SELECT shop_domain, MAX(last_seen) AS t FROM sessions GROUP BY shop_domain",
+        "SELECT shop_domain, MAX(created_at) AS t FROM orders GROUP BY shop_domain",
+    ]
     with engine.connect() as conn:
+        if _has_table(conn, "integrations"):
+            parts.append("SELECT shop_domain, MAX(created_at) AS t FROM integrations GROUP BY shop_domain")
         rows = conn.execute(text(
-            "SELECT shop_domain FROM sessions WHERE shop_domain IS NOT NULL "
-            "GROUP BY shop_domain ORDER BY MAX(last_seen) DESC"
+            "SELECT shop_domain FROM (" + " UNION ALL ".join(parts) + ") x "
+            "WHERE shop_domain IS NOT NULL GROUP BY shop_domain ORDER BY MAX(t) DESC"
         )).fetchall()
     return [r[0] for r in rows]
 
@@ -225,7 +268,21 @@ def overview(f: Frames) -> dict:
     s, o = f.sessions, f.orders
     out = _meta(f)
     if s.empty:
-        out.update(kpis=None, daily=[], top_agents=[], funnel=[], activity=[])
+        # No tracker sessions yet. Cloudflare analytics may still show agent
+        # traffic, so return that rather than an empty page.
+        daily = []
+        if not f.agg.empty:
+            idx = _date_index(f)
+            by = (f.agg[f.agg["class"].isin(["crawler", "scraper"])]
+                  .groupby(["date", "class"])["requests"].sum().unstack(fill_value=0)
+                  .reindex(idx, fill_value=0))
+            daily = [{"date": d.isoformat(), "human": 0, "assistant": 0, "automation": 0,
+                      "crawler": int(by.at[d, "crawler"]) if "crawler" in by else 0,
+                      "scraper": int(by.at[d, "scraper"]) if "scraper" in by else 0,
+                      "total": 0, "agent_share": None, "ai_referred": 0, "ai_influenced_revenue": 0.0}
+                     for d in idx]
+        out.update(kpis=None, daily=daily, top_agents=[], funnel=[], activity=[],
+                   agent_files=agent_files(f), edge_agents=edge_agents(f))
         return out
 
     agents = s[s["traffic_class"] != HUMAN]
@@ -247,6 +304,14 @@ def overview(f: Frames) -> dict:
         .groupby("date")["order_value"].sum().reindex(idx, fill_value=0)
         if not ai_influenced.empty else pd.Series(0, index=idx)
     )
+    # With Cloudflare analytics but no edge Worker, crawler and scraper bars
+    # are request counts from the aggregates (labelled as such via coverage).
+    use_agg = not (f.coverage or {}).get("edge") and not f.agg.empty
+    agg_daily = (
+        f.agg[f.agg["class"].isin(["crawler", "scraper"])]
+        .groupby(["date", "class"])["requests"].sum().unstack(fill_value=0).reindex(idx, fill_value=0)
+        if use_agg else None
+    )
     daily = []
     for d in idx:
         row = {"date": d.isoformat()}
@@ -255,6 +320,9 @@ def overview(f: Frames) -> dict:
             n = int(by_class.at[d, cls]) if cls in by_class else 0
             row[key] = n
             total += n
+        if agg_daily is not None:
+            for key in ("crawler", "scraper"):
+                row[key] = int(agg_daily.at[d, key]) if key in agg_daily else 0
         row["total"] = total
         row["agent_share"] = _ratio(total - row["human"], total)
         row["ai_referred"] = int(ai_daily.at[d])
@@ -301,14 +369,38 @@ def overview(f: Frames) -> dict:
         ],
         funnel=funnel,
         activity=activity(f),
-        agent_files=agent_files(f) if (f.coverage or {}).get("edge") else [],
+        agent_files=agent_files(f),
+        edge_agents=edge_agents(f),
     )
     return out
 
 
+def edge_agents(f: Frames) -> list[dict]:
+    """Request counts per agent from Cloudflare analytics, busiest first."""
+    if f.agg.empty:
+        return []
+    a = f.agg[f.agg["class"].notna()]
+    g = a.groupby(["agent", "class"])["requests"].sum().reset_index().sort_values("requests", ascending=False)
+    return [{"name": r["agent"], "class": r["class"], "requests": int(r["requests"])}
+            for _, r in g.head(15).iterrows()]
+
+
 def agent_files(f: Frames) -> list[dict]:
     """Which agents fetched robots.txt, agents.md, llms.txt, sitemaps and
-    product feeds. Edge data only: these requests never run JavaScript."""
+    product feeds. Edge data only (Worker sessions, else Cloudflare request
+    counts): these requests never run JavaScript."""
+    cov = f.coverage or {}
+    if not cov.get("edge"):
+        if not cov.get("cloudflare") or f.agg.empty:
+            return []
+        files = f.agg[f.agg["file"].notna()]
+        out = []
+        for name, g in files.groupby("file"):
+            top = g.groupby("agent")["requests"].sum().sort_values(ascending=False).head(5)
+            out.append({"file": name, "count": int(g["requests"].sum()), "unit": "requests",
+                        "agents": int(g["agent"].nunique()),
+                        "top_agents": [{"agent": k, "count": int(v)} for k, v in top.items()]})
+        return sorted(out, key=lambda x: x["count"], reverse=True)
     s = f.sessions
     if s.empty or "edge_paths" not in s:
         return []
@@ -326,9 +418,10 @@ def agent_files(f: Frames) -> list[dict]:
     out = []
     for name, g in df.groupby("file"):
         top = g["agent"].value_counts().head(5)
-        out.append({"file": name, "sessions": int(len(g)), "agents": int(g["agent"].nunique()),
-                    "top_agents": [{"agent": a, "sessions": int(n)} for a, n in top.items()]})
-    return sorted(out, key=lambda x: x["sessions"], reverse=True)
+        out.append({"file": name, "count": int(len(g)), "unit": "sessions",
+                    "agents": int(g["agent"].nunique()),
+                    "top_agents": [{"agent": a, "count": int(n)} for a, n in top.items()]})
+    return sorted(out, key=lambda x: x["count"], reverse=True)
 
 
 def activity(f: Frames, limit: int = 10) -> list[dict]:
@@ -448,8 +541,13 @@ def sessions_list(f: Frames, cls: str | None = None, limit: int = 50, offset: in
         {CLASS_KEYS[c]: int((s["traffic_class"] == c).sum()) for c in AGENT_CLASSES} if not s.empty else {}
     )
     page = agents.iloc[offset: offset + limit] if not agents.empty else agents
+    req_counts = (
+        {k: int(v) for k, v in f.agg[f.agg["class"].notna()].groupby("class")["requests"].sum().items()}
+        if not f.agg.empty else {}
+    )
     out.update(
         total=int(len(agents)), limit=limit, offset=offset, counts_by_class=counts,
+        request_counts_by_class=req_counts,  # Cloudflare analytics: requests, not sessions
         sessions=[_session_row(r) for r in page.itertuples()],
     )
     return out

@@ -186,6 +186,27 @@ Every number a merchant sees comes from `app/metrics.py`, served by
 
 Run the tests with `python -m pytest tests`.
 
+## Cloudflare analytics (easiest edge coverage)
+
+For a store on Cloudflare, the quickest way to see crawlers, fetch-only
+assistants and scrapers: no code, no DNS change. On the dashboard's
+**Connections** page (or `POST /integrations/cloudflare`), enter the zone ID
+and a read-only API token (Zone → Analytics → Read, scoped to that zone).
+
+- The token is tested with a real query before it's saved, stored encrypted
+  (`app/secrets_box.py`, key from `INTEGRATIONS_KEY` or `EDGE_SIGNING_SECRET`)
+  and never returned.
+- `app/cloudflare.py` backfills 7 days, then syncs hourly: in the background
+  whenever a store's overview is read and the data is over an hour old, or
+  on demand (`POST /integrations/cloudflare/sync?shop=`).
+- Pulls hourly request counts per user agent and path from Cloudflare's
+  GraphQL Analytics API (works on the Free plan) for AI crawlers, assistants,
+  scrapers, headless browsers and HTTP libraries, plus every agent-file
+  fetch. Stored in `edge_aggregates`.
+- These are request counts (Cloudflare samples them), not sessions. Every
+  view says so; `coverage.edge_unit` is `"requests"`.
+- Disconnecting deletes the pulled data.
+
 ## Edge logs (optional, full coverage)
 
 `edge/` holds a Cloudflare Worker for merchants whose domain runs through

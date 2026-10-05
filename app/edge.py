@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
-from app.analytics import agent_file
+from app.analytics import HTTP_LIBRARIES, agent_file
 from app.classify import KNOWN_AGENT_UA_SUBSTRINGS, classify_session
 from app.db import get_db
 from app.models import Session as SessionModel
@@ -46,10 +46,6 @@ SESSION_WINDOW_SECONDS = 30 * 60
 MAX_PATHS_PER_SESSION = 25
 MAX_BODY_BYTES = 256 * 1024
 
-HTTP_LIBRARIES = (
-    "curl", "wget", "python-requests", "python-urllib", "httpx", "aiohttp", "go-http-client",
-    "node-fetch", "axios", "undici", "okhttp", "java/", "scrapy", "libwww-perl", "ruby", "guzzle",
-)
 
 
 # ---------------------------------------------------------------------------

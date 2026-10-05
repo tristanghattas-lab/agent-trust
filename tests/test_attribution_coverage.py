@@ -74,7 +74,7 @@ def test_coverage_reflects_connected_sources(client):
     cov = client.get(f"/metrics/overview?shop={SHOP}&days=7", headers=AUTH).json()["coverage"]
     assert cov["tracker"] is True and cov["edge"] is False
     assert {s["key"]: s["connected"] for s in cov["sources"]} == {
-        "tracker": True, "orders": True, "edge": False, "pixel": False}
+        "tracker": True, "orders": True, "edge": False, "cloudflare": False, "pixel": False}
 
 
 def test_demo_coverage_is_marked_simulated(client):

@@ -40,7 +40,8 @@ ALL_CLASSES = [HUMAN] + AGENT_CLASSES
 
 # User-agent tokens. A user-directed assistant fetches pages because a person
 # asked it to; a crawler indexes or trains. They behave and matter differently.
-ASSISTANT_TOKENS = ("chatgpt-user", "perplexity-user", "claude-user")
+ASSISTANT_TOKENS = ("chatgpt-user", "perplexity-user", "claude-user", "mistralai-user",
+                    "duckassistbot", "meta-externalfetcher")
 CRAWLER_TOKENS = (
     "gptbot", "oai-searchbot", "claudebot", "claude-searchbot", "anthropic-ai",
     "perplexitybot", "google-extended", "geminibot", "amazonbot", "applebot-extended",
@@ -103,20 +104,49 @@ def order_referral_source(landing_site: str | None, referring_site: str | None) 
     return ai_referral_source(referring_site) or ai_referral_source(landing_site)
 
 
+AGENT_NAMES = {
+    "chatgpt-user": "ChatGPT", "perplexity-user": "Perplexity", "claude-user": "Claude",
+    "mistralai-user": "Mistral", "duckassistbot": "DuckAssist", "meta-externalfetcher": "Meta AI",
+    "gptbot": "GPTBot", "oai-searchbot": "OAI-SearchBot", "claudebot": "ClaudeBot",
+    "claude-searchbot": "Claude-SearchBot", "anthropic-ai": "anthropic-ai",
+    "perplexitybot": "PerplexityBot", "google-extended": "Google-Extended",
+    "geminibot": "GeminiBot", "amazonbot": "Amazonbot",
+    "applebot-extended": "Applebot-Extended", "meta-externalagent": "Meta",
+    "ccbot": "CCBot", "bytespider": "Bytespider",
+}
+
+# Scripts, not browsers. Shared by the edge Worker ingest and the
+# Cloudflare analytics connector.
+HTTP_LIBRARIES = (
+    "curl", "wget", "python-requests", "python-urllib", "httpx", "aiohttp", "go-http-client",
+    "node-fetch", "axios", "undici", "okhttp", "java/", "scrapy", "libwww-perl", "ruby", "guzzle",
+)
+
+
+def classify_user_agent(ua: str | None) -> tuple[str, str] | None:
+    """(agent name, class key) from a user-agent string alone, for request
+    counts with no session behind them (Cloudflare analytics). None means
+    nothing agent-like: treat as ordinary browser traffic."""
+    low = (ua or "").lower()
+    for tokens, cls in ((ASSISTANT_TOKENS, "assistant"), (CRAWLER_TOKENS, "crawler"),
+                        (SCRAPER_TOKENS, "scraper")):
+        for token in tokens:
+            if token in low:
+                return AGENT_NAMES[token], cls
+    if "headlesschrome" in low:
+        return "HeadlessChrome", "automation"
+    lib = next((lib for lib in HTTP_LIBRARIES if lib in low), None)
+    if lib:
+        return lib.strip("/"), "scraper"
+    return None
+
+
 def agent_label(row: pd.Series) -> str:
     """Specific agent name for tables (ChatGPT, GPTBot, browser-use ...)."""
     ua = (row.get("user_agent") or "").lower()
     for token in ASSISTANT_TOKENS + CRAWLER_TOKENS + SCRAPER_TOKENS:
         if token in ua:
-            return {
-                "chatgpt-user": "ChatGPT", "perplexity-user": "Perplexity", "claude-user": "Claude",
-                "gptbot": "GPTBot", "oai-searchbot": "OAI-SearchBot", "claudebot": "ClaudeBot",
-                "claude-searchbot": "Claude-SearchBot", "anthropic-ai": "anthropic-ai",
-                "perplexitybot": "PerplexityBot", "google-extended": "Google-Extended",
-                "geminibot": "GeminiBot", "amazonbot": "Amazonbot",
-                "applebot-extended": "Applebot-Extended", "meta-externalagent": "Meta",
-                "ccbot": "CCBot", "bytespider": "Bytespider",
-            }[token]
+            return AGENT_NAMES[token]
     if "headlesschrome" in ua:
         return "HeadlessChrome"
     reasons = row.get("classification_reasons") or ""
