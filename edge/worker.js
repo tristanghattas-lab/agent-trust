@@ -115,8 +115,8 @@ export async function send(records, env) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-agent-trust-shop": env.AGENT_TRUST_SHOP,
-      "x-agent-trust-signature": await hmacHex(env.AGENT_TRUST_EDGE_KEY, body),
+      "x-agent-trust-shop": (env.AGENT_TRUST_SHOP || "").trim(),
+      "x-agent-trust-signature": await hmacHex((env.AGENT_TRUST_EDGE_KEY || "").trim(), body),
     },
     body,
   });
