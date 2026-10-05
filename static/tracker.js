@@ -266,6 +266,21 @@
     }
   }
 
+  // Path plus attribution tags only (utm_*, ref): enough to tell an AI
+  // referral (ChatGPT adds utm_source=chatgpt.com) without collecting other
+  // query parameters, which can hold emails or search terms.
+  function landingPath() {
+    try {
+      var keep = [];
+      new URLSearchParams(location.search).forEach(function (v, k) {
+        if (/^utm_/i.test(k) || k === "ref") keep.push(encodeURIComponent(k) + "=" + encodeURIComponent(v.slice(0, 100)));
+      });
+      return location.pathname + (keep.length ? "?" + keep.slice(0, 6).join("&") : "");
+    } catch (e) {
+      return location.pathname;
+    }
+  }
+
   function post(payload) {
     var body = JSON.stringify(
       Object.assign(
@@ -274,7 +289,7 @@
           shop: (window.Shopify && window.Shopify.shop) || location.hostname,
           user_agent: navigator.userAgent,
           referrer: document.referrer,
-          landing_path: location.pathname,
+          landing_path: landingPath(),
           js_executed: true,
         },
         behavioralMetrics(),

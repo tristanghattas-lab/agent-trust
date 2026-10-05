@@ -223,7 +223,17 @@ def enrich_frames(sessions: pd.DataFrame, orders: pd.DataFrame, outcomes: pd.Dat
     if not s.empty:
         s["traffic_class"] = s.apply(classify_traffic, axis=1)
         s["agent_name"] = s.apply(agent_label, axis=1)
+        # Referrer first, then a UTM tag on the landing page (the tracker keeps
+        # utm_* and ref; ChatGPT adds utm_source=chatgpt.com to its links).
         s["ai_source"] = s["referrer"].map(ai_referral_source)
+        s["ai_source"] = s["ai_source"].where(s["ai_source"].notna(),
+                                              s["landing_path"].map(ai_referral_source))
+        # An undeclared browser agent that arrived through an AI assistant's
+        # link was most likely that assistant's agent. A hint, not proof:
+        # labelled "likely" until a signature confirms it.
+        hint = (s["traffic_class"] == AUTOMATION) & s["ai_source"].notna() \
+            & (s["agent_name"] == "Undeclared (behavioural)")
+        s.loc[hint, "agent_name"] = s.loc[hint, "ai_source"] + " agent (likely)"
         s["date"] = s["first_seen"].dt.tz_convert("Australia/Sydney").dt.date
         path = s["landing_path"].fillna("")
         ordered_keys = set(o["session_key"].dropna()) if not o.empty else set()

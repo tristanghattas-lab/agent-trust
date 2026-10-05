@@ -109,3 +109,32 @@ def test_test_mode_orders_are_counted_but_not_revenue(client):
     assert k["kpis"]["orders"] == 2 and k["kpis"]["test_orders"] == 1
     assert k["kpis"]["revenue"] == 50.0
     assert k["by_source_name"][0]["test_orders"] == 1
+
+
+def test_utm_on_landing_page_counts_as_ai_referral(client):
+    """No referrer (private window, agent browser) but ?utm_source=chatgpt.com
+    on the landing page: still an AI referral, for the session and its order."""
+    shop = "utm-store.myshopify.com"
+    client.post("/ingest", json={
+        "session_key": "utm1", "shop": shop, "event_count": 3, "referrer": "",
+        "landing_path": "/?utm_source=chatgpt.com", "user_agent": "Mozilla/5.0 Chrome/129.0",
+        "pointer_env": "fine", "mouse_event_rate": 12.0, "teleport_click_ratio": 0.0,
+        "clicks_delta": 3, "sparse_trail_clicks_delta": 0})
+    webhook(client, shop, 770001, 40.0, note_attributes=[{"name": "agent_trust_session", "value": "utm1"}])
+    auth = {"Authorization": f"Bearer {KEY}"}
+    ov = client.get(f"/metrics/overview?shop={shop}&days=7", headers=auth).json()
+    assert ov["kpis"]["ai_referred_visits"] == 1
+    orders = client.get(f"/metrics/orders?shop={shop}&days=7", headers=auth).json()
+    seg = {s["segment"]: s["orders"] for s in orders["by_segment"]}
+    assert seg.get("ai_referred") == 1
+
+
+def test_automation_via_ai_link_is_named_likely_agent(client):
+    shop = "utm-agent.myshopify.com"
+    client.post("/ingest", json={
+        "session_key": "utm2", "shop": shop, "event_count": 3, "landing_path": "/?utm_source=chatgpt.com",
+        "user_agent": "Mozilla/5.0 Chrome/129.0", "pointer_env": "fine", "mouse_event_rate": 0.0,
+        "teleport_click_ratio": 1.0, "clicks_delta": 3, "sparse_trail_clicks_delta": 3})
+    s = client.get(f"/metrics/sessions?shop={shop}&days=7", headers={"Authorization": f"Bearer {KEY}"}).json()
+    names = {r["agent"] for r in s["sessions"]}
+    assert "ChatGPT agent (likely)" in names, names
