@@ -65,6 +65,10 @@ def classify_session(
     mouse_event_rate: float | None = None,
     click_count: int | None = None,
     sparse_trail_click_count: int | None = None,
+    automation_tells: str | None = None,
+    input_count: int | None = None,
+    keyless_input_count: int | None = None,
+    keydown_count: int | None = None,
 ) -> ClassificationResult:
     reasons: list[str] = []
     confidence = 0.0
@@ -143,6 +147,32 @@ def classify_session(
     ):
         reasons.append(f"low_mouse_event_rate:{mouse_event_rate:.3f}/s")
         confidence += 0.2
+
+    # Rule 7: browser-automation fingerprints. navigator.webdriver is set by
+    # Playwright, Selenium and Puppeteer unless the operator patches it out,
+    # and real browsers never set it. Strong on its own; the others are
+    # corroborating (a privacy browser can zero its languages, say).
+    tells = [t for t in (automation_tells or "").split(",") if t]
+    if tells:
+        strong = {"webdriver", "playwright_globals", "chromedriver_globals", "phantom_globals"}
+        hit_strong = [t for t in tells if t in strong]
+        reasons.append(f"automation_tells:{'+'.join(tells)}")
+        confidence += 0.6 if hit_strong else 0.2
+        if agent_family == "unknown":
+            agent_family = "browser-use"
+
+    # Rule 8: text fields changed with no keys pressed at all. Autofill and
+    # password managers do this too, so it needs several fields and zero
+    # keydowns across the whole session, and it only adds a little.
+    if (
+        input_count is not None
+        and keyless_input_count is not None
+        and keyless_input_count >= 3
+        and keyless_input_count == input_count
+        and (keydown_count or 0) == 0
+    ):
+        reasons.append(f"keyless_inputs:{keyless_input_count}")
+        confidence += 0.15
 
     confidence = min(confidence, 1.0)
     is_agent = confidence >= 0.4

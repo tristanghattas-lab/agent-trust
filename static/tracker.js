@@ -7,16 +7,53 @@
  * lightweight events to the ingestion API.
  *
  * Usage:
- *   <script src="https://<ingest-host>/tracker.js"
+ *   <script async src="https://<ingest-host>/tracker.js"
  *           data-api="https://<ingest-host>/ingest"></script>
+ *
+ * Optional attributes:
+ *   data-sample="0.25"  record only this share of sessions (default 1).
+ *                       Decided once per session and remembered, so a
+ *                       sampled session is recorded on every page.
+ *
+ * Privacy: never reads what is typed, pasted or selected. Only counts and
+ * timings (how many clicks, how many keystrokes, whether a field changed
+ * without any keys being pressed) leave the browser.
  *
  * Deliberately does not try to do fingerprinting Cloudflare/AWS already
  * do — it captures what's only visible inside the commerce flow itself:
  * cart value, checkout timing, age-gate interaction.
  */
 (function () {
+  if (window.__agentTrustLoaded) return; // installed twice (theme + GTM) — run once
+  window.__agentTrustLoaded = true;
+
   var script = document.currentScript;
   var API = (script && script.getAttribute("data-api")) || "/ingest";
+  var SAMPLE = parseFloat((script && script.getAttribute("data-sample")) || "1");
+  if (!(SAMPLE >= 0 && SAMPLE <= 1)) SAMPLE = 1;
+
+  // Per-session sampling decision, remembered so a session is either
+  // recorded on every page or on none (half-recorded sessions would skew
+  // every funnel number).
+  function inSample() {
+    if (SAMPLE >= 1) return true;
+    var decision = null;
+    try {
+      decision = localStorage.getItem("_at_sampled");
+    } catch (e) {
+      /* storage blocked */
+    }
+    if (decision === null) {
+      decision = Math.random() < SAMPLE ? "1" : "0";
+      try {
+        localStorage.setItem("_at_sampled", decision);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    return decision === "1";
+  }
+  if (!inSample()) return;
 
   function getSessionKey() {
     var key = "";
@@ -128,6 +165,76 @@
     };
   }
 
+  // Browser-automation fingerprints. Each is a property a normal browser
+  // doesn't have but a driven one leaks unless the operator patches it out.
+  // Cheap to fake for a careful operator, so these are corroborating
+  // signals; the behavioural ones above are harder to fake.
+  function automationTells() {
+    var tells = [];
+    try {
+      if (navigator.webdriver === true) tells.push("webdriver");
+      if (/HeadlessChrome/.test(navigator.userAgent)) tells.push("headless_ua");
+      if (navigator.languages && navigator.languages.length === 0) tells.push("no_languages");
+      if (window.outerWidth === 0 && window.outerHeight === 0) tells.push("zero_outer_window");
+      if (window.__playwright__binding__ || window.__pwInitScripts) tells.push("playwright_globals");
+      if (window._phantom || window.callPhantom) tells.push("phantom_globals");
+      for (var k in window) {
+        if (/^\$?cdc_|^\$wdc_/.test(k)) {
+          tells.push("chromedriver_globals");
+          break;
+        }
+      }
+    } catch (e) {
+      /* a hostile or locked-down environment — report what we have */
+    }
+    return tells.join(",");
+  }
+
+  // Typing cadence, counts only. A person changes a text field by pressing
+  // keys (or pasting); a script often sets the value and fires an input
+  // event with no key pressed at all. Autofill also changes fields without
+  // keys, so this is only ever scored alongside other signals.
+  var keydownCount = 0;
+  var inputCount = 0;
+  var keylessInputCount = 0;
+  var lastKeydownAt = 0;
+  var sentInputs = 0;
+  var sentKeylessInputs = 0;
+  var sentKeydowns = 0;
+  document.addEventListener(
+    "keydown",
+    function () {
+      keydownCount++;
+      lastKeydownAt = Date.now();
+    },
+    { passive: true, capture: true }
+  );
+  document.addEventListener(
+    "input",
+    function (e) {
+      var t = e.target;
+      if (!t || !(t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      if (t.type === "checkbox" || t.type === "radio" || t.type === "range") return;
+      inputCount++;
+      var type = e.inputType || "";
+      var pasted = type.indexOf("Paste") !== -1 || type.indexOf("Drop") !== -1;
+      if (!pasted && Date.now() - lastKeydownAt > 200) keylessInputCount++;
+    },
+    { passive: true, capture: true }
+  );
+
+  function inputMetrics() {
+    var out = {
+      inputs_delta: inputCount - sentInputs,
+      keyless_inputs_delta: keylessInputCount - sentKeylessInputs,
+      keydowns_delta: keydownCount - sentKeydowns,
+    };
+    sentInputs = inputCount;
+    sentKeylessInputs = keylessInputCount;
+    sentKeydowns = keydownCount;
+    return out;
+  }
+
   // Captured before anything below patches window.fetch, so our own
   // outgoing calls (here and in the auto-detect patch further down) never
   // re-trigger the patch and loop.
@@ -170,6 +277,7 @@
           js_executed: true,
         },
         behavioralMetrics(),
+        inputMetrics(),
         payload
       )
     );
@@ -194,8 +302,9 @@
     }
   }
 
-  // Basic pageview on load.
-  post({ event_count: 1 });
+  // Basic pageview on load, with the automation fingerprint (checked once
+  // per page; the server keeps the union across pages).
+  post({ event_count: 1, automation_tells: automationTells() });
 
   // Flush this page's behavioural metrics when the visitor leaves it.
   // Without this they only ever went out with the load-time pageview —
@@ -206,8 +315,10 @@
   var flushedMoves = 0;
   var flushedClicks = 0;
   function flushMetrics() {
-    if (pointerEnv !== "fine") return;
-    if (mouseMoveCount === flushedMoves && clickCount === flushedClicks) return;
+    var inputsChanged = inputCount !== sentInputs || keydownCount !== sentKeydowns;
+    var pointerChanged =
+      pointerEnv === "fine" && (mouseMoveCount !== flushedMoves || clickCount !== flushedClicks);
+    if (!inputsChanged && !pointerChanged) return;
     flushedMoves = mouseMoveCount;
     flushedClicks = clickCount;
     post({ event_count: 0 });

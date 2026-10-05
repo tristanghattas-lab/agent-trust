@@ -270,12 +270,15 @@ REASON_TEXT = {
     "fast_checkout": "Checked out implausibly fast ({v})",
     "sparse_trail_clicks": "{v} clicks had no mouse movement leading to them",
     "low_mouse_event_rate": "Almost no mouse movement during the session ({v})",
+    "automation_tells": "Browser reported automation fingerprints ({v})",
+    "keyless_inputs": "{v} form fields filled without a single key press",
 }
 
 
 def explain(reason: str) -> str:
     key, _, val = reason.partition(":")
-    return REASON_TEXT.get(key, reason).format(v=val.replace("_for_", " for ").replace("/s", " moves/s"))
+    val = val.replace("_for_", " for ").replace("/s", " moves/s").replace("+", ", ")
+    return REASON_TEXT.get(key, reason).format(v=val)
 
 
 with tab_sess:
@@ -344,6 +347,9 @@ with tab_sess:
                 "Clicks / with no mouse trail": (
                     f"{int(r.click_count)} / {int(r.sparse_trail_click_count)}"
                     if pd.notna(r.click_count) else "—"),
+                "Fields filled / without keys": (
+                    f"{int(r.input_count)} / {int(r.keyless_input_count)}"
+                    if "input_count" in r and pd.notna(r.input_count) else "—"),
                 "Cart": money(r.cart_value) if pd.notna(r.cart_value) else "—",
                 "Checkout time": (f"{r.time_to_checkout_seconds:.0f}s"
                                   if pd.notna(r.time_to_checkout_seconds) else "—"),

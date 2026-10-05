@@ -213,6 +213,25 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
     elif js and mobile:
         pointer_env = "coarse"
 
+    # Automation fingerprints: an unpatched driver leaks navigator.webdriver.
+    tells = ""
+    if population == "automation":
+        if "HeadlessChrome" in ua:
+            tells = "headless_ua,webdriver"
+        elif rng.random() < 0.3:
+            tells = "webdriver"
+
+    # Typing cadence at checkout: people press keys (or autofill some fields);
+    # automation often sets field values directly.
+    input_count = keyless = keydowns = None
+    if checkout and js:
+        input_count = int(rng.integers(5, 9))
+        if population == "automation" and rng.random() < 0.7:
+            keyless, keydowns = input_count, 0
+        else:
+            keyless = int(rng.binomial(input_count, 0.25))  # autofill
+            keydowns = int(rng.integers(20, 90))
+
     if checkout:
         if population == "automation":
             ttc = float(rng.uniform(4, 30))
@@ -239,6 +258,10 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
         mouse_event_rate=mouse_rate,
         click_count=click_count,
         sparse_trail_click_count=sparse,
+        automation_tells=tells or None,
+        input_count=input_count,
+        keyless_input_count=keyless,
+        keydown_count=keydowns,
     )
 
     session_key = f"demo_{int(rng.integers(0, 16**12)):012x}"
@@ -269,6 +292,10 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
         teleport_click_ratio=teleport,
         click_count=click_count,
         sparse_trail_click_count=sparse,
+        automation_tells=tells or None,
+        input_count=input_count,
+        keyless_input_count=keyless,
+        keydown_count=keydowns,
         _population=population,  # ground truth, for the classifier-accuracy view
     )
 

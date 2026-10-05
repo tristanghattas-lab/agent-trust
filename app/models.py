@@ -85,6 +85,14 @@ class Session(Base):
     # preceded by <= 2 mousemoves since the previous click — see tracker.js.
     click_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sparse_trail_click_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Union of automation fingerprints seen on any page of the session,
+    # comma-separated (see tracker.js automationTells).
+    automation_tells: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Typing cadence, session totals: text-field changes, those made with no
+    # key pressed (and not a paste), and keydowns. Counts only.
+    input_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    keyless_input_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    keydown_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     orders: Mapped[list["Order"]] = relationship(back_populates="session")
 

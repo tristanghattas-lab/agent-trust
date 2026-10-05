@@ -116,6 +116,34 @@ can't reach `localhost`, and Shopify webhooks need somewhere real to POST to.
    (`python -m harness.log_run --site-type ecommerce_generic`, or
    `ecommerce_wine` / `lead_gen` for the other site types).
 
+### Installing on a live store through Google Tag Manager
+
+For a store that already runs GTM (United Cellars does), this needs no
+theme edit and is easy for the store's team to approve and remove:
+
+1. GTM → **Tags → New → Custom HTML**, paste:
+
+   ```html
+   <script async src="https://agent-trust-api-o7u9.onrender.com/tracker.js"
+           data-api="https://agent-trust-api-o7u9.onrender.com/ingest"
+           data-sample="1"></script>
+   ```
+
+2. Trigger: **All Pages**. Name it "Agent Trust tracker". Preview, then publish.
+3. Set `SITE_ORIGIN` on the API service to the store's domain (for example
+   `https://unitedcellars.com.au`) so CORS accepts the tracker's posts.
+4. Add one line to the store's privacy policy, along the lines of: "We use
+   behavioural analytics to detect automated and AI-agent traffic. This
+   records interaction patterns such as clicks and timings, never what you
+   type."
+5. Lower `data-sample` (for example `0.25`) only if traffic grows enough to
+   strain the free database tier. Sampling is decided once per session.
+
+What the tracker collects: page path, referrer, user agent, cart value,
+click and mouse-movement counts, keystroke and form-field-change counts,
+and browser-automation fingerprints such as `navigator.webdriver`. It never
+reads field contents. If it's installed twice (theme and GTM), it runs once.
+
 ## Not built yet (on purpose)
 
 - Automated threat-testing runner (`harness/playwright_runner.py`).

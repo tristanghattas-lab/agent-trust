@@ -26,6 +26,13 @@ class IngestEvent(BaseModel):
     # every page of the session (the fields above are per-page snapshots).
     clicks_delta: int | None = None
     sparse_trail_clicks_delta: int | None = None
+    # Comma-separated browser-automation fingerprints (navigator.webdriver,
+    # HeadlessChrome UA, driver globals ...), sent with each pageview.
+    automation_tells: str | None = None
+    # Typing cadence deltas — counts only, never field contents.
+    inputs_delta: int | None = None
+    keyless_inputs_delta: int | None = None
+    keydowns_delta: int | None = None
 
 
 class OrderIn(BaseModel):

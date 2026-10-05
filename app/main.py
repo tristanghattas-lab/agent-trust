@@ -94,12 +94,20 @@ def _migrate_new_columns() -> None:
     rather than removing it after the one deploy that needed it. Revisit
     with a real migration tool once schema changes stop being this rare.
     """
+    # ADD COLUMN IF NOT EXISTS is Postgres syntax. A local SQLite database
+    # is created fresh by create_all() with every column, so skip it there.
+    if engine.dialect.name != "postgresql":
+        return
     statements = [
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pointer_env VARCHAR",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mouse_event_rate FLOAT",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS teleport_click_ratio FLOAT",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS click_count INTEGER",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sparse_trail_click_count INTEGER",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS automation_tells TEXT",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS input_count INTEGER",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS keyless_input_count INTEGER",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS keydown_count INTEGER",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS session_match_method VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
@@ -167,7 +175,12 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
     if event.pointer_env:
         session.pointer_env = event.pointer_env
     if event.mouse_event_rate is not None:
-        session.mouse_event_rate = event.mouse_event_rate
+        # Per-page snapshot from the tracker, and a freshly loaded page
+        # always reads ~0. Keep the session's highest page rate: a person
+        # moves the mouse a lot on at least one page; automation on none.
+        # (Overwriting flagged real people for low mouse movement on
+        # whatever page they happened to be on last.)
+        session.mouse_event_rate = max(session.mouse_event_rate or 0.0, event.mouse_event_rate)
     if event.teleport_click_ratio is not None:
         session.teleport_click_ratio = event.teleport_click_ratio
     # Both counters start at 0 as soon as the tracker reports click data
@@ -178,6 +191,17 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         session.sparse_trail_click_count = (session.sparse_trail_click_count or 0) + (
             event.sparse_trail_clicks_delta or 0
         )
+
+    if event.automation_tells:
+        seen = set(filter(None, (session.automation_tells or "").split(",")))
+        seen.update(t.strip() for t in event.automation_tells.split(",") if t.strip())
+        session.automation_tells = ",".join(sorted(seen))
+    if event.inputs_delta is not None:
+        session.input_count = (session.input_count or 0) + event.inputs_delta
+        session.keyless_input_count = (session.keyless_input_count or 0) + (
+            event.keyless_inputs_delta or 0
+        )
+        session.keydown_count = (session.keydown_count or 0) + (event.keydowns_delta or 0)
 
     if event.checkout_started and session.checkout_started_at is None:
         session.checkout_started_at = now
@@ -202,6 +226,10 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         mouse_event_rate=session.mouse_event_rate,
         click_count=session.click_count,
         sparse_trail_click_count=session.sparse_trail_click_count,
+        automation_tells=session.automation_tells,
+        input_count=session.input_count,
+        keyless_input_count=session.keyless_input_count,
+        keydown_count=session.keydown_count,
     )
     session.is_agent = result.is_agent
     session.agent_family = result.agent_family
