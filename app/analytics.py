@@ -6,6 +6,7 @@ Streamlit dashboard, so both always compute the same numbers.
 from __future__ import annotations
 
 import json
+import re
 
 import pandas as pd
 
@@ -73,6 +74,10 @@ def classify_traffic(row: pd.Series) -> str:
         return SCRAPER
     if row.get("agent_family") == "browser-use":
         return AUTOMATION
+    # A Web Bot Auth signature with no known user agent: an agent acting for
+    # someone (signed agents are typically user-directed), seen at the edge.
+    if "signed_agent:" in (row.get("classification_reasons") or ""):
+        return ASSISTANT
     return SCRAPER
 
 
@@ -114,6 +119,15 @@ def agent_label(row: pd.Series) -> str:
             }[token]
     if "headlesschrome" in ua:
         return "HeadlessChrome"
+    reasons = row.get("classification_reasons") or ""
+    lib = re.search(r"http_library:([^,]+)", reasons)
+    if lib:
+        return lib.group(1)
+    signed = re.search(r"signed_agent:([^,]+)", reasons)
+    if signed:
+        return f"Signed agent ({signed.group(1)})"
+    if "non_browser_client" in reasons:
+        return "Headless client"
     if row.get("traffic_class") == AUTOMATION:
         return "Undeclared (behavioural)"
     return "—"
@@ -251,6 +265,9 @@ REASON_TEXT = {
     "low_mouse_event_rate": "Almost no mouse movement during the session ({v})",
     "automation_tells": "Browser reported automation fingerprints ({v})",
     "keyless_inputs": "{v} form fields filled without a single key press",
+    "signed_agent": "Signed its requests as an agent (Web Bot Auth, {v})",
+    "http_library": "Requests came from an HTTP library, not a browser ({v})",
+    "non_browser_client": "Requests lacked the headers every real browser sends",
 }
 
 
@@ -269,3 +286,22 @@ FIXES = {
     "age_verification": "Move age verification to checkout with a real check, not a click-through gate.",
     "exceed_allocation": "Enforce allocation per customer identity and address, not per cart.",
 }
+
+
+# Agent-facing files. Who reads these, and how often, is one of the few
+# signals of agent interest a store gets before any purchase.
+AGENT_FILE_PATTERNS = {
+    "robots.txt": re.compile(r"^/robots\.txt$"),
+    "agents.md": re.compile(r"^/agents\.md$"),
+    "llms.txt": re.compile(r"^/llms(-full)?\.txt$"),
+    "sitemap": re.compile(r"^/sitemap[^/]*\.xml$"),
+    "well-known": re.compile(r"^/\.well-known/"),
+    "products.json": re.compile(r"/products(\.json|/[^/]+\.js(on)?)$"),
+}
+
+
+def agent_file(path: str | None) -> str | None:
+    for name, pattern in AGENT_FILE_PATTERNS.items():
+        if path and pattern.search(path):
+            return name
+    return None

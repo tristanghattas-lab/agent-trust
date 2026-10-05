@@ -27,6 +27,7 @@ from app.models import Session as SessionModel
 from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
+from app.edge import router as edge_router
 from app.metrics_api import router as metrics_router
 from app.shops import DEFAULT_SHOP, normalise_shop
 
@@ -79,6 +80,7 @@ class OriginLoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(OriginLoggingMiddleware)
 app.include_router(metrics_router)
+app.include_router(edge_router)
 
 
 @app.on_event("startup")
@@ -117,6 +119,8 @@ def _migrate_new_columns() -> None:
         "CREATE INDEX IF NOT EXISTS ix_sessions_shop_domain ON sessions (shop_domain)",
         "CREATE INDEX IF NOT EXISTS ix_orders_shop_domain ON orders (shop_domain)",
         "CREATE INDEX IF NOT EXISTS ix_threat_test_runs_shop_domain ON threat_test_runs (shop_domain)",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS edge_paths TEXT",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS edge_signals TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS source_name VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS app_id VARCHAR",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS landing_site TEXT",
@@ -251,6 +255,7 @@ def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
         input_count=session.input_count,
         keyless_input_count=session.keyless_input_count,
         keydown_count=session.keydown_count,
+        edge_signals=session.edge_signals,
     )
     session.is_agent = result.is_agent
     session.agent_family = result.agent_family

@@ -41,6 +41,13 @@ MIN_CLICKS_FOR_TRAIL_RULE = 2
 SPARSE_TRAIL_RATIO_THRESHOLD = 0.8
 
 
+# Web Bot Auth Signature-Agent domain -> agent family.
+SIGNED_AGENT_FAMILIES = {
+    "chatgpt.com": "chatgpt", "openai.com": "chatgpt", "anthropic.com": "claude",
+    "claude.ai": "claude", "perplexity.ai": "perplexity", "google.com": "gemini",
+}
+
+
 @dataclass
 class ClassificationResult:
     is_agent: bool
@@ -69,6 +76,7 @@ def classify_session(
     input_count: int | None = None,
     keyless_input_count: int | None = None,
     keydown_count: int | None = None,
+    edge_signals: str | None = None,
 ) -> ClassificationResult:
     reasons: list[str] = []
     confidence = 0.0
@@ -173,6 +181,24 @@ def classify_session(
     ):
         reasons.append(f"keyless_inputs:{keyless_input_count}")
         confidence += 0.15
+
+    # Rule 9: request-level signals from edge logs (app/edge.py). These cover
+    # traffic that never runs JavaScript, so the tracker's rules can't fire.
+    for sig in [x for x in (edge_signals or "").split(",") if x]:
+        kind, _, val = sig.partition(":")
+        if kind == "signed_agent":
+            # Web Bot Auth signature present. Not verified here, so a strong
+            # signal of an agent, not proof of which one.
+            reasons.append(f"signed_agent:{val}")
+            confidence += 0.6
+            if agent_family == "unknown":
+                agent_family = SIGNED_AGENT_FAMILIES.get(val, "signed-agent")
+        elif kind == "http_library":
+            reasons.append(f"http_library:{val}")
+            confidence += 0.5
+        elif kind == "non_browser":
+            reasons.append("non_browser_client")
+            confidence += 0.4
 
     confidence = min(confidence, 1.0)
     is_agent = confidence >= 0.4

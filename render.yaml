@@ -50,6 +50,10 @@ services:
       # Store that untagged rows and untagged test runs belong to.
       - key: DEFAULT_SHOP
         value: icelabs-bdy57pfy.myshopify.com
+      # Derives each store's edge key (edge/worker.js signs with it). Print a
+      # store's key with: python -m scripts.edge_key <shop>
+      - key: EDGE_SIGNING_SECRET
+        generateValue: true
 
   - type: web
     name: agent-trust-dashboard

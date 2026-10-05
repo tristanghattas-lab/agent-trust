@@ -1,0 +1,20 @@
+# Agent Trust edge Worker. Deploy with: npx wrangler deploy
+# Requires the store's domain to be proxied (orange cloud) on your own
+# Cloudflare zone, CNAME'd to shops.myshopify.com. See edge/README.md.
+name = "agent-trust-edge"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# Replace with the store's domain. Both apex and www if both serve the store.
+routes = [
+  { pattern = "example.com.au/*", zone_name = "example.com.au" },
+  { pattern = "www.example.com.au/*", zone_name = "example.com.au" },
+]
+
+[vars]
+AGENT_TRUST_INGEST_URL = "https://agent-trust-api-o7u9.onrender.com/edge/ingest"
+AGENT_TRUST_SHOP = "example.myshopify.com"
+
+# Secrets (not in this file):
+#   npx wrangler secret put AGENT_TRUST_EDGE_KEY   # from: python -m scripts.edge_key <shop>
+#   npx wrangler secret put IP_SALT                # any long random string

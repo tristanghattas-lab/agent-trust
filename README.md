@@ -186,6 +186,15 @@ Every number a merchant sees comes from `app/metrics.py`, served by
 
 Run the tests with `python -m pytest tests`.
 
+## Edge logs (optional, full coverage)
+
+`edge/` holds a Cloudflare Worker for merchants whose domain runs through
+their own Cloudflare zone. It forwards non-browser requests (declared bots,
+signed agents, HTTP libraries, headless clients, agent-file fetches) to
+`POST /edge/ingest`, which groups them into sessions and classifies them.
+That's what makes crawlers, scrapers and fetch-only assistants visible.
+Setup and privacy details: `edge/README.md`.
+
 ## Not built yet (on purpose)
 
 - Automated threat-testing runner (`harness/playwright_runner.py`).

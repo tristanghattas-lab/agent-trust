@@ -10,6 +10,7 @@ shop "demo", from the synthetic dataset (app/demo_data.py).
 """
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.analytics import (
-    AGENT_CLASSES, AI_CHANNEL, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER,
+    AGENT_CLASSES, AI_CHANNEL, agent_file, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER,
     SEVERITY_ORDER, enrich_frames, explain,
 )
 from app.shops import DEMO_SHOP
@@ -300,8 +301,34 @@ def overview(f: Frames) -> dict:
         ],
         funnel=funnel,
         activity=activity(f),
+        agent_files=agent_files(f) if (f.coverage or {}).get("edge") else [],
     )
     return out
+
+
+def agent_files(f: Frames) -> list[dict]:
+    """Which agents fetched robots.txt, agents.md, llms.txt, sitemaps and
+    product feeds. Edge data only: these requests never run JavaScript."""
+    s = f.sessions
+    if s.empty or "edge_paths" not in s:
+        return []
+    rows = []
+    for r in s[s["edge_paths"].notna()].itertuples():
+        try:
+            paths = json.loads(r.edge_paths)
+        except (TypeError, ValueError):
+            continue
+        for name in {agent_file(p) for p in paths} - {None}:
+            rows.append((name, r.agent_name if r.traffic_class != HUMAN else "Unidentified"))
+    if not rows:
+        return []
+    df = pd.DataFrame(rows, columns=["file", "agent"])
+    out = []
+    for name, g in df.groupby("file"):
+        top = g["agent"].value_counts().head(5)
+        out.append({"file": name, "sessions": int(len(g)), "agents": int(g["agent"].nunique()),
+                    "top_agents": [{"agent": a, "sessions": int(n)} for a, n in top.items()]})
+    return sorted(out, key=lambda x: x["sessions"], reverse=True)
 
 
 def activity(f: Frames, limit: int = 10) -> list[dict]:

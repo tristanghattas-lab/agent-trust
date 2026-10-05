@@ -96,6 +96,11 @@ class Session(Base):
     input_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     keyless_input_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     keydown_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Edge logs (app/edge.py): sessions built from request logs of traffic
+    # that never runs JavaScript. Distinct paths seen (JSON list, capped) and
+    # request-level signals (comma-separated) for classify.py rule 9.
+    edge_paths: Mapped[str | None] = mapped_column(Text, nullable=True)
+    edge_signals: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     orders: Mapped[list["Order"]] = relationship(back_populates="session")
 

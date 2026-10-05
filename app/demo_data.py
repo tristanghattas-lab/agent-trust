@@ -110,6 +110,24 @@ DISCOUNT_PLEAS = [
 ]
 
 
+# Agent files fetched by sessions seen only at the edge (no JavaScript).
+# Invented rates, shaped like typical crawler and scraper behaviour.
+EDGE_FILE_RATES = {
+    "crawler": {"/robots.txt": 0.55, "/sitemap.xml": 0.4, "/llms.txt": 0.2, "/agents.md": 0.15,
+                "/products.json": 0.1},
+    "scraper": {"/products.json": 0.6, "/sitemap.xml": 0.3, "/robots.txt": 0.1},
+    "assistant": {"/agents.md": 0.2, "/robots.txt": 0.3, "/llms.txt": 0.1},
+}
+
+
+def _edge_paths(rng: np.random.Generator, population: str, landing: str) -> str:
+    paths = [landing]
+    for path, p in EDGE_FILE_RATES.get(population, {}).items():
+        if rng.random() < p:
+            paths.append(path)
+    return json.dumps(paths)
+
+
 def _pick(rng: np.random.Generator, options: list[tuple[str, float]]) -> str:
     values, weights = zip(*options)
     weights = np.array(weights) / sum(weights)
@@ -299,6 +317,8 @@ def _session_row(rng, population: str, started: datetime) -> tuple[dict, dict | 
         input_count=input_count,
         keyless_input_count=keyless,
         keydown_count=keydowns,
+        edge_paths=_edge_paths(rng, population, landing) if not js else None,
+        edge_signals=None,
         _population=population,  # ground truth, for the classifier-accuracy view
     )
 

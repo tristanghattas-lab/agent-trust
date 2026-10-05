@@ -253,6 +253,20 @@ elif page == "Agent sessions":
         st.markdown(f'<div class="at-card-sub">Showing {len(rows)} of {data["total"]:,}.</div>',
                     unsafe_allow_html=True)
 
+    if "crawler" in shown:
+        files = load("overview").get("agent_files") or []
+        if files:
+            with st.container(border=True):
+                ui.card_title("What agents read", "Sessions fetching agent-facing files, from edge logs. "
+                              "agents.md and llms.txt tell agents how to use the store; products.json "
+                              "is a favourite of price scrapers.")
+                cols = st.columns(min(len(files), 6))
+                for col, fl in zip(cols, files[:6]):
+                    tops = ", ".join(f"{t['agent']} ({t['sessions']})" for t in fl["top_agents"][:3])
+                    col.markdown(ui.kpi(fl["file"], f"{fl['sessions']:,}", f"{fl['agents']} agents"),
+                                 unsafe_allow_html=True)
+                    col.markdown(f'<div class="at-card-sub">{ui.esc(tops)}</div>', unsafe_allow_html=True)
+
     # Detail: lead with undeclared agents caught on behaviour that bought something.
     pool = load("sessions", cls="automation", limit=300)["sessions"] + \
         load("sessions", cls="assistant", limit=100)["sessions"]
