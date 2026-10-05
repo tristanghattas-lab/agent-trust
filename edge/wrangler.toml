@@ -7,13 +7,13 @@ compatibility_date = "2026-09-01"
 
 # Replace with the store's domain. Both apex and www if both serve the store.
 routes = [
-  { pattern = "example.com.au/*", zone_name = "example.com.au" },
-  { pattern = "www.example.com.au/*", zone_name = "example.com.au" },
+  { pattern = "checkskincare.com/*", zone_name = "checkskincare.com" },
+  { pattern = "www.checkskincare.com/*", zone_name = "checkskincare.com" },
 ]
 
 [vars]
 AGENT_TRUST_INGEST_URL = "https://agent-trust-api-o7u9.onrender.com/edge/ingest"
-AGENT_TRUST_SHOP = "example.myshopify.com"
+AGENT_TRUST_SHOP = "73ee52.myshopify.com"
 
 # Secrets (not in this file):
 #   npx wrangler secret put AGENT_TRUST_EDGE_KEY   # from: python -m scripts.edge_key <shop>
