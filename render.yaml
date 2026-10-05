@@ -39,6 +39,7 @@ services:
       # Set these two in the Render dashboard after deploy — not committed
       # to the repo. SHOPIFY_WEBHOOK_SECRET comes from Shopify when you
       # create the orders/create webhook (Settings -> Notifications).
+      # Each store has its own: comma-separate them, e.g. secret_icelabs,secret_vv
       - key: SHOPIFY_WEBHOOK_SECRET
         sync: false
       - key: SHOPIFY_ADMIN_API_TOKEN

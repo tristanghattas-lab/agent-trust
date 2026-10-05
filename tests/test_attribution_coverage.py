@@ -84,3 +84,17 @@ def test_demo_coverage_is_marked_simulated(client):
     assert d["kpis"]["ai_channel_orders"] > 0
     kinds = {a["kind"] for a in d["activity"]}
     assert "ai_channel_order" in kinds
+
+
+
+def test_webhook_accepts_any_listed_store_secret(client, monkeypatch):
+    def post(order_id):
+        body = json.dumps({"id": order_id, "total_price": 10.0, "currency": "AUD"}).encode()
+        sig = base64.b64encode(hmac.new(b"test_secret", body, hashlib.sha256).digest()).decode()
+        return client.post("/webhooks/shopify/orders", content=body, headers={
+            "x-shopify-hmac-sha256": sig, "x-shopify-shop-domain": "second-store.myshopify.com",
+            "content-type": "application/json"}).status_code
+    monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", "other_store_secret, test_secret")
+    assert post(990001) == 200
+    monkeypatch.setenv("SHOPIFY_WEBHOOK_SECRET", "other_store_secret")
+    assert post(990002) == 401

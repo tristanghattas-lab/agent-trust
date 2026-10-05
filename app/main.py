@@ -318,9 +318,11 @@ async def shopify_order_webhook(
     x_shopify_shop_domain: str | None = Header(default=None),
 ):
     raw_body = await request.body()
-    secret = get_webhook_secret()
+    # One secret per store (Shopify signs notification webhooks per store),
+    # comma-separated in SHOPIFY_WEBHOOK_SECRET.
+    secrets_ = [x.strip() for x in get_webhook_secret().split(",") if x.strip()]
 
-    if not verify_shopify_hmac(raw_body, x_shopify_hmac_sha256, secret):
+    if not any(verify_shopify_hmac(raw_body, x_shopify_hmac_sha256, sec) for sec in secrets_):
         # Fails closed: an unconfigured secret (empty string) also fails
         # verification, so this can't be silently bypassed by leaving
         # SHOPIFY_WEBHOOK_SECRET unset.
