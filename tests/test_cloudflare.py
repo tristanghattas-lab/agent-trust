@@ -134,3 +134,32 @@ def test_query_filter_shape():
     either = f["AND"][2]["OR"]
     assert {"userAgent_like": "%GPTBot%"} in either
     assert any("clientRequestPath_in" in x for x in either)
+
+
+def test_worker_start_keeps_earlier_request_counts(client):
+    """Connecting the Worker mustn't wipe crawler history: days up to the
+    Worker's first session keep Cloudflare counts, later days use sessions."""
+    from app.models import Session as SessionModel
+    shop = "cf-then-worker.myshopify.com"
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    db = SessionLocal()
+    try:
+        db.add(Integration(shop_domain=shop, kind="cloudflare", external_id=ZONE,
+                           secret_encrypted="x", synced_through=now))
+        for days_ago in (3, 0):
+            db.add(EdgeAggregate(shop_domain=shop, source="cloudflare", hour=now - timedelta(days=days_ago),
+                                 user_agent="Mozilla/5.0; compatible; GPTBot/1.2", path="/products/x",
+                                 requests=50))
+        db.add(SessionModel(session_key="edge_test_worker_start", shop_domain=shop, ip="h",
+                            user_agent="Mozilla/5.0 Claude-User/1.0", first_seen=now, last_seen=now,
+                            event_count=1, js_executed=False, is_agent=True, agent_family="claude",
+                            classification_confidence=0.9, classification_reasons="known_agent_ua"))
+        db.commit()
+    finally:
+        db.close()
+    ov = client.get(f"/metrics/overview?shop={shop}&days=7", headers=AUTH).json()
+    assert ov["coverage"]["edge"] is True and ov["edge_since"]
+    counted = [d for d in ov["daily"] if d["crawler_units"] == "requests"]
+    assert sum(d["crawler"] for d in counted) == 100  # 3 days ago + the Worker's first day
+    assert all(d["date"] <= ov["edge_since"] for d in counted)
+    assert ov["edge_agents"]  # bots card still fed by Cloudflare counts

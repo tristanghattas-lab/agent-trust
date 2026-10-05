@@ -304,13 +304,20 @@ def overview(f: Frames) -> dict:
         .groupby("date")["order_value"].sum().reindex(idx, fill_value=0)
         if not ai_influenced.empty else pd.Series(0, index=idx)
     )
-    # With Cloudflare analytics but no edge Worker, crawler and scraper bars
-    # are request counts from the aggregates (labelled as such via coverage).
-    use_agg = not (f.coverage or {}).get("edge") and not f.agg.empty
+    # Crawler and scraper bars: Worker sessions where the Worker was running,
+    # otherwise Cloudflare request counts. Days up to and including the day
+    # the Worker started use the counts, so connecting a Worker doesn't wipe
+    # the history (or today's partial day). Units are labelled via
+    # `crawler_units` on each day and `edge_since` in the response.
+    edge_since = None
+    if (f.coverage or {}).get("edge") and "js_executed" in s:
+        edge_rows = s[~s["js_executed"].astype(bool)]
+        if not edge_rows.empty:
+            edge_since = edge_rows["first_seen"].min().tz_convert("Australia/Sydney").date()
     agg_daily = (
         f.agg[f.agg["class"].isin(["crawler", "scraper"])]
         .groupby(["date", "class"])["requests"].sum().unstack(fill_value=0).reindex(idx, fill_value=0)
-        if use_agg else None
+        if not f.agg.empty else None
     )
     daily = []
     for d in idx:
@@ -320,9 +327,12 @@ def overview(f: Frames) -> dict:
             n = int(by_class.at[d, cls]) if cls in by_class else 0
             row[key] = n
             total += n
-        if agg_daily is not None:
+        use_counts = agg_daily is not None and (edge_since is None and not (f.coverage or {}).get("edge")
+                                                or (edge_since is not None and d <= edge_since))
+        if use_counts:
             for key in ("crawler", "scraper"):
                 row[key] = int(agg_daily.at[d, key]) if key in agg_daily else 0
+        row["crawler_units"] = "requests" if use_counts else "sessions"
         row["total"] = total
         row["agent_share"] = _ratio(total - row["human"], total)
         row["ai_referred"] = int(ai_daily.at[d])
@@ -371,6 +381,7 @@ def overview(f: Frames) -> dict:
         activity=activity(f),
         agent_files=agent_files(f),
         edge_agents=edge_agents(f),
+        edge_since=edge_since.isoformat() if edge_since else None,
     )
     return out
 

@@ -157,10 +157,16 @@ if page == "Overview":
 
     left, right = st.columns([2, 1], gap="medium")
     with left, st.container(border=True):
-        unit = (d.get("coverage") or {}).get("edge_unit")
-        ui.card_title("Agent traffic", "Per day by class. People excluded so the mix is visible."
-                      + (" Crawler and scraper bars are requests (Cloudflare analytics); the rest are "
-                         "sessions." if unit == "requests" else " Sessions."))
+        units = {r.get("crawler_units") for r in daily}
+        since = d.get("edge_since")
+        if units == {"requests"}:
+            note = " Crawler and scraper bars are requests (Cloudflare analytics); the rest are sessions."
+        elif "requests" in units and since:
+            note = (f" Crawler and scraper bars are Cloudflare request counts up to "
+                    f"{pd.Timestamp(since):%d %b} (before the edge Worker started), sessions after.")
+        else:
+            note = " Sessions."
+        ui.card_title("Agent traffic", "Per day by class. People excluded so the mix is visible." + note)
         plot(charts.agent_traffic(daily, shown))
     with right, st.container(border=True):
         ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
@@ -189,7 +195,7 @@ if page == "Overview":
             plot(charts.hbars([t["name"] for t in top], [t["sessions"] for t in top],
                               [charts.CLASS_COLOURS[t["class"]] for t in top], fmt=",d"))
         bots = d.get("edge_agents") or []
-        if bots and (d.get("coverage") or {}).get("edge_unit") == "requests":
+        if bots:
             ui.card_title("Bots and fetchers", "Requests per agent, Cloudflare analytics.")
             plot(charts.hbars([b["name"] for b in bots[:8]], [b["requests"] for b in bots[:8]],
                               [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots[:8]], fmt=",d"))
