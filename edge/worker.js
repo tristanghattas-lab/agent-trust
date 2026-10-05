@@ -17,6 +17,9 @@
  * Static assets are ignored. Cloudflare disables Workers on /checkout.
  * IPs are hashed here with a daily salt; the raw IP never leaves Cloudflare.
  *
+ * Optional: a Cron Trigger (every 10 minutes) pings the API's /health so a
+ * free-tier API stays awake.
+ *
  * Configuration (wrangler.toml / dashboard):
  *   vars:    AGENT_TRUST_INGEST_URL  e.g. https://<api>/edge/ingest
  *            AGENT_TRUST_SHOP        the store's myshopify domain
@@ -127,12 +130,26 @@ export default {
         ctx.waitUntil(
           buildRecord(request, response, env)
             .then((rec) => send([rec], env))
-            .catch(() => {}) // logging must never affect the store
+            .then(async (r) => {
+              // Visible in the Worker's Observability > Logs. 401 = wrong
+              // edge key or shop; 5xx/timeouts = the API was asleep.
+              if (!r.ok) console.log("agent-trust ingest failed", r.status, (await r.text()).slice(0, 200));
+            })
+            .catch((e) => console.log("agent-trust ingest error", String(e))) // never affects the store
         );
       }
     } catch (e) {
       /* never let logging break the store */
     }
     return response;
+  },
+
+  // Cron trigger (every 10 minutes): keeps a free-tier API awake so records
+  // aren't lost to cold starts. Harmless on a paid API.
+  async scheduled(event, env, ctx) {
+    if (!env.AGENT_TRUST_INGEST_URL) return;
+    const health = new URL("/health", env.AGENT_TRUST_INGEST_URL).toString();
+    ctx.waitUntil(fetch(health).then((r) => console.log("agent-trust keep-warm", r.status))
+      .catch((e) => console.log("agent-trust keep-warm error", String(e))));
   },
 };

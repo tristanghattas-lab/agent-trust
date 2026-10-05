@@ -543,8 +543,10 @@ elif page == "Connections":
                 "2. <b>Settings → Variables and Secrets</b>: add the four values below "
                 "(the two marked secret as type <b>Secret</b>).<br>"
                 "3. <b>Settings → Domains &amp; Routes → Add → Route</b>: zone = the store's domain, "
-                "route = <code>yourdomain.com/*</code>. Add <code>www.yourdomain.com/*</code> too. Set "
-                "<b>Failure mode</b> to <b>Fail open (proceed)</b>.</div>",
+                "route = <code>*yourdomain.com/*</code> (no dot after the star: covers the domain and www). "
+                "Set <b>Failure mode</b> to <b>Fail open (proceed)</b>.<br>"
+                "4. <b>Settings → Trigger events → Add → Cron trigger</b>: every 10 minutes "
+                "(<code>*/10 * * * *</code>). Keeps a free-tier API awake so no records are lost.</div>",
                 unsafe_allow_html=True)
             st.code(
                 f"AGENT_TRUST_INGEST_URL = {client.ingest_url()}\n"

@@ -11,6 +11,10 @@ routes = [
   { pattern = "www.checkskincare.com/*", zone_name = "checkskincare.com" },
 ]
 
+# Keeps a free-tier API awake so records aren't lost to cold starts.
+[triggers]
+crons = ["*/10 * * * *"]
+
 [vars]
 AGENT_TRUST_INGEST_URL = "https://agent-trust-api-o7u9.onrender.com/edge/ingest"
 AGENT_TRUST_SHOP = "73ee52.myshopify.com"
