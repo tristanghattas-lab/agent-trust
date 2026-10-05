@@ -30,7 +30,7 @@ import pandas as pd
 
 from app.classify import classify_session
 
-DEMO_DAYS = 30
+DEMO_DAYS = 90
 SEED = 20261003
 
 HUMAN_UAS = [
@@ -122,7 +122,7 @@ def _pick(rng: np.random.Generator, options: list[tuple[str, float]]) -> str:
 POPULATIONS = {
     "human": dict(p_view=0.62, p_cart=0.20, p_checkout=0.48, p_order=0.62, js=0.99),
     "human_ai_referred": dict(p_view=0.88, p_cart=0.21, p_checkout=0.50, p_order=0.62, js=0.99),
-    "assistant": dict(p_view=0.92, p_cart=0.10, p_checkout=0.45, p_order=0.20, js=0.35),
+    "assistant": dict(p_view=0.92, p_cart=0.12, p_checkout=0.50, p_order=0.35, js=0.35),
     "automation": dict(p_view=0.95, p_cart=0.55, p_checkout=0.55, p_order=0.35, js=1.0),
     "crawler": dict(p_view=0.80, p_cart=0.0, p_checkout=0.0, p_order=0.0, js=0.0),
     "scraper": dict(p_view=0.90, p_cart=0.0, p_checkout=0.0, p_order=0.0, js=0.0),
@@ -134,13 +134,16 @@ def _daily_counts(rng: np.random.Generator, day_idx: int, weekday: int) -> dict[
     the window to show what growth looks like on the charts."""
     growth = day_idx / DEMO_DAYS  # 0 -> 1 across the window
     weekend = 1.18 if weekday >= 5 else 1.0
+    # A mid-size wine merchant: ~300 human sessions a day. Agent traffic
+    # roughly triples across the quarter; that trend is invented, to show
+    # how the charts read when adoption grows.
     return {
-        "human": int(rng.poisson(118 * weekend * (1 + 0.08 * growth))),
-        "human_ai_referred": int(rng.poisson((3.5 + 4.0 * growth) * weekend)),
-        "assistant": int(rng.poisson(2.5 + 5.0 * growth)),
-        "automation": int(rng.poisson(1.2 + 1.8 * growth)),
-        "crawler": int(rng.poisson(14 + 6 * growth)),
-        "scraper": int(rng.poisson(4)),
+        "human": int(rng.poisson(300 * weekend * (1 + 0.06 * growth))),
+        "human_ai_referred": int(rng.poisson((5 + 11 * growth) * weekend)),
+        "assistant": int(rng.poisson(5 + 13 * growth)),
+        "automation": int(rng.poisson(2.5 + 5.5 * growth)),
+        "crawler": int(rng.poisson(28 + 14 * growth)),
+        "scraper": int(rng.poisson(8)),
     }
 
 
