@@ -49,6 +49,11 @@ npx wrangler secret put IP_SALT        # any long random string
 npx wrangler deploy
 ```
 
+3. Set each route to fail open. In Cloudflare: Workers Routes → the route →
+   Edit → "Request limit failure mode" → **Fail open (proceed)**. Then if the
+   Free plan's 100,000 requests a day runs out, shoppers still reach the store
+   and only logging pauses. Fail closed would show them Error 1027.
+
 Within minutes the store's dashboard shows "Edge logs" as connected, crawler
 and scraper classes appear, and "What agents read" fills in.
 
