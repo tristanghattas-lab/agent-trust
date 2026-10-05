@@ -60,19 +60,26 @@ CSS = """
             border-radius:8px; padding:7px 12px; margin: 10px 0 16px;}
 
   /* --- cards (bordered st.container) --- */
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div[data-testid="stVerticalBlock"]) {
+  /* Streamlit marks plain and bordered containers the same way, so cards
+     are recognised by their first element: a card title (card_title()).
+     The direct-child chain stops outer layout wrappers from matching. */
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(> div > div[data-testid="stVerticalBlock"]
+      > div[data-testid="stElementContainer"]:first-child .at-card-title),
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(> div[data-testid="stVerticalBlock"]
+      > div[data-testid="stElementContainer"]:first-child .at-card-title) {
       background:#fcfcfb; border:1px solid rgba(11,11,11,0.08) !important; border-radius:14px;
-      box-shadow: 0 1px 2px rgba(11,11,11,0.03);}
+      box-shadow: 0 1px 2px rgba(11,11,11,0.03); padding: 10px 14px;}
   .at-card-title {font-size:0.98rem; font-weight:640; color:#0b0b0b; margin:0;}
   .at-card-sub {font-size:0.8rem; color:#898781; margin: 2px 0 6px;}
 
   /* --- KPI tiles --- */
   .at-kpi {background:#fcfcfb; border:1px solid rgba(11,11,11,0.08); border-radius:14px;
-           padding:14px 16px 10px; box-shadow: 0 1px 2px rgba(11,11,11,0.03); height:100%;}
+           padding:14px 16px 10px; box-shadow: 0 1px 2px rgba(11,11,11,0.03); min-height:132px;}
   .at-kpi-label {font-size:0.78rem; color:#52514e; font-weight:550; display:flex; gap:6px; align-items:center;}
   .at-kpi-value {font-size:1.75rem; font-weight:680; color:#0b0b0b; letter-spacing:-0.02em; margin-top:4px;
                  line-height:1.15;}
-  .at-kpi-delta {font-size:0.78rem; margin-top:3px; color:#898781;}
+  .at-kpi-delta {font-size:0.78rem; margin-top:3px; color:#898781;
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .at-kpi-delta.up {color:#006300;} .at-kpi-delta.down {color:#b42b2b;}
   .at-kpi svg {display:block; margin-top:6px;}
 
@@ -164,11 +171,12 @@ def card_title(title: str, sub: str | None = None) -> None:
     )
 
 
-def page_header(title: str, crumb: str, demo: bool, note: str = "") -> None:
+def page_header(title: str, crumb: str, demo: bool, note: str = "",
+                live_label: str | None = None) -> None:
     pill = (
         '<span class="at-pill demo"><span class="at-dot" style="background:#e0a400"></span>TEST DATA</span>'
         if demo else
-        '<span class="at-pill live"><span class="at-dot" style="background:#0ca30c"></span>LIVE</span>'
+        f'<span class="at-pill live"><span class="at-dot" style="background:#0ca30c"></span>{esc(live_label or "LIVE")}</span>'
     )
     st.markdown(
         f'<div class="at-head"><div><div class="at-title">{esc(title)}</div>'

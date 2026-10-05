@@ -119,6 +119,16 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
     return Frames(shop, "live", s, o, r, start, end, days)
 
 
+def list_shops(engine: Engine) -> list[str]:
+    """Stores with any recorded traffic, most recently active first."""
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT shop_domain FROM sessions WHERE shop_domain IS NOT NULL "
+            "GROUP BY shop_domain ORDER BY MAX(last_seen) DESC"
+        )).fetchall()
+    return [r[0] for r in rows]
+
+
 def _meta(f: Frames) -> dict:
     return {
         "shop": f.shop,
@@ -341,6 +351,10 @@ def _session_row(r) -> dict:
         "cart_value": _num(r.cart_value, 2),
         "ordered": bool(r.st_ordered),
         "signals": len(r.reasons_list),
+        # Caught on behaviour alone, not because it named itself: the cases
+        # a user-agent list would have missed.
+        "behaviour_only": bool(r.reasons_list)
+        and not any(code.startswith("ua_match") for code in r.reasons_list),
     }
 
 

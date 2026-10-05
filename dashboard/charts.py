@@ -1,191 +1,166 @@
 """
-Plotly figure builders. One visual system for every chart: fixed class
-colours, thin marks, recessive grid, hover on every mark.
+Plotly figures built from the metrics API's JSON. One visual system for
+every chart: fixed class colours, thin marks, recessive grid, hover on
+every mark, transparent background so charts sit on the card.
 
 Palette: the dataviz skill's validated reference categorical order (slots
-1-4 pass adjacent CVD checks in light mode). Human traffic is a neutral
-grey so the agent classes carry the colour.
+1-4 pass adjacent colour-vision checks in light mode). Human traffic is a
+neutral grey so the agent classes carry the colour.
 """
 from __future__ import annotations
 
 import pandas as pd
 import plotly.graph_objects as go
 
-from dashboard.data import (
-    ASSISTANT, AUTOMATION, CRAWLER, HUMAN, SCRAPER, SEVERITY_ORDER,
-)
-
 INK = "#0b0b0b"
 INK_2 = "#52514e"
 MUTED = "#898781"
-GRID = "#e1e0d9"
+GRID = "#ecebe6"
 AXIS = "#c3c2b7"
 SURFACE = "#fcfcfb"
+FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
 CLASS_COLOURS = {
-    ASSISTANT: "#2a78d6",
-    AUTOMATION: "#eb6834",
-    CRAWLER: "#1baf7a",
-    SCRAPER: "#eda100",
-    HUMAN: "#c3c2b7",
-    "Unmatched session": "#e1e0d9",
+    "assistant": "#2a78d6",
+    "automation": "#eb6834",
+    "crawler": "#1baf7a",
+    "scraper": "#eda100",
+    "human": "#c3c2b7",
+}
+CLASS_LABELS = {
+    "assistant": "AI assistant (declared)",
+    "automation": "Browser automation (undeclared)",
+    "crawler": "AI crawler",
+    "scraper": "Scraper / other bot",
+    "human": "Human",
 }
 SEGMENT_COLOURS = {
-    "All human visits": "#c3c2b7",
-    "AI-referred humans": "#4a3aa7",
-    ASSISTANT: CLASS_COLOURS[ASSISTANT],
-    AUTOMATION: CLASS_COLOURS[AUTOMATION],
+    "human": "#c3c2b7",
+    "ai_referred": "#4a3aa7",
+    "assistant": CLASS_COLOURS["assistant"],
+    "automation": CLASS_COLOURS["automation"],
 }
 SOURCE_COLOURS = {
     "ChatGPT": "#2a78d6", "Perplexity": "#eb6834", "Gemini": "#1baf7a",
     "Copilot": "#eda100", "Claude": "#e87ba4",
 }
 STATUS = {"pass": "#0ca30c", "partial": "#fab219", "fail": "#d03b3b"}
+SEVERITY_ORDER = ["High", "Medium", "Needs review", "Low", "Info"]
 SEVERITY_COLOURS = {
     "High": "#d03b3b", "Medium": "#ec835a", "Needs review": "#fab219",
     "Low": "#86b6ef", "Info": "#c3c2b7",
 }
 
-FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
-
-def _layout(fig: go.Figure, height: int = 320, legend: bool = True) -> go.Figure:
+def _layout(fig: go.Figure, height: int = 300, legend: bool = True) -> go.Figure:
     fig.update_layout(
         height=height,
-        margin=dict(l=4, r=12, t=8, b=4),
+        margin=dict(l=4, r=12, t=6, b=4),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=FONT, size=13, color=INK_2),
-        hoverlabel=dict(bgcolor="white", bordercolor=GRID, font=dict(family=FONT, color=INK)),
+        font=dict(family=FONT, size=12, color=INK_2),
+        hoverlabel=dict(bgcolor="white", bordercolor=GRID, font=dict(family=FONT, color=INK, size=12)),
         showlegend=legend,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                    font=dict(size=12, color=INK_2), title=None, traceorder="normal"),
-        bargap=0.35,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+                    font=dict(size=11.5, color=INK_2), title=None, traceorder="normal"),
+        bargap=0.3,
     )
-    fig.update_xaxes(showgrid=False, linecolor=AXIS, tickfont=dict(color=MUTED), title=None,
+    fig.update_xaxes(showgrid=False, linecolor=AXIS, tickfont=dict(color=MUTED, size=11), title=None,
                      ticks="", zeroline=False, automargin=True)
-    fig.update_yaxes(gridcolor=GRID, gridwidth=1, linecolor=AXIS, showline=False,
-                     tickfont=dict(color=MUTED), title=None, zeroline=False, automargin=True)
+    fig.update_yaxes(gridcolor=GRID, gridwidth=1, showline=False, tickfont=dict(color=MUTED, size=11),
+                     title=None, zeroline=False, automargin=True)
     return fig
 
 
-def agent_sessions_by_day(s: pd.DataFrame) -> go.Figure:
-    agents = s[s["traffic_class"] != HUMAN]
-    days = pd.Index(sorted(s["date"].unique()), name="date")
-    counts = agents.groupby(["date", "traffic_class"]).size().unstack(fill_value=0).reindex(days, fill_value=0)
+def agent_traffic(daily: list[dict]) -> go.Figure:
+    df = pd.DataFrame(daily)
     fig = go.Figure()
-    for cls in [ASSISTANT, AUTOMATION, CRAWLER, SCRAPER]:
-        if cls not in counts:
-            continue
+    for key in ["assistant", "automation", "crawler", "scraper"]:
         fig.add_bar(
-            x=counts.index, y=counts[cls], name=cls, marker_color=CLASS_COLOURS[cls],
-            marker_line=dict(color=SURFACE, width=1),
-            hovertemplate="%{x|%a %d %b}<br>" + cls + ": %{y}<extra></extra>",
+            x=pd.to_datetime(df["date"]), y=df[key], name=CLASS_LABELS[key],
+            marker_color=CLASS_COLOURS[key], marker_line=dict(color=SURFACE, width=0.5),
+            hovertemplate="%{x|%a %d %b}<br>" + CLASS_LABELS[key] + ": %{y}<extra></extra>",
         )
-    fig.update_layout(barmode="stack")
-    return _layout(fig)
+    fig.update_layout(barmode="stack", bargap=0.18)
+    return _layout(fig, height=310)
 
 
-def agent_share_by_day(s: pd.DataFrame) -> go.Figure:
-    daily = s.groupby("date").agg(total=("session_key", "size"),
-                                  agents=("is_agent", "sum"))
-    daily["share"] = daily["agents"] / daily["total"]
-    roll = daily["share"].rolling(7, min_periods=1).mean()
+def funnel(rows: list[dict]) -> go.Figure:
+    stages = [("added_to_cart_rate", "Added to cart"), ("started_checkout_rate", "Started checkout"),
+              ("ordered_rate", "Ordered")]
     fig = go.Figure()
-    fig.add_scatter(x=daily.index, y=daily["share"], mode="markers", name="Daily",
-                    marker=dict(size=6, color="#86b6ef"),
-                    hovertemplate="%{x|%a %d %b}: %{y:.1%}<extra>Daily</extra>")
-    fig.add_scatter(x=daily.index, y=roll, mode="lines", name="7-day average",
-                    line=dict(width=2, color="#2a78d6"),
-                    hovertemplate="%{x|%a %d %b}: %{y:.1%}<extra>7-day avg</extra>")
-    fig.update_yaxes(tickformat=".0%", rangemode="tozero")
-    return _layout(fig)
-
-
-def funnel_comparison(funnel: pd.DataFrame) -> go.Figure:
-    """funnel: index=segment, columns=stages (as share of segment's visits)."""
-    fig = go.Figure()
-    for seg in funnel.index:
+    for r in rows:
         fig.add_bar(
-            x=funnel.columns, y=funnel.loc[seg], name=seg,
-            marker_color=SEGMENT_COLOURS.get(seg, MUTED),
+            x=[label for _, label in stages], y=[r[k] or 0 for k, _ in stages],
+            name=r["label"], marker_color=SEGMENT_COLOURS[r["segment"]],
             marker_line=dict(color=SURFACE, width=1),
-            hovertemplate=seg + "<br>%{x}: %{y:.1%} of visits<extra></extra>",
+            hovertemplate=r["label"] + "<br>%{x}: %{y:.1%} of visits<extra></extra>",
         )
-    fig.update_layout(barmode="group", bargroupgap=0.08)
+    fig.update_layout(barmode="group", bargroupgap=0.1)
     fig.update_yaxes(tickformat=".0%")
-    return _layout(fig, height=340)
+    return _layout(fig, height=300)
 
 
-def ai_referrals_by_day(s: pd.DataFrame) -> go.Figure:
-    ref = s[s["ai_source"].notna()]
-    days = pd.Index(sorted(s["date"].unique()), name="date")
-    counts = ref.groupby(["date", "ai_source"]).size().unstack(fill_value=0).reindex(days, fill_value=0)
-    order = counts.sum().sort_values(ascending=False).index
+def referrals_daily(daily: list[dict], sources: list[str]) -> go.Figure:
+    df = pd.DataFrame(daily)
     fig = go.Figure()
-    for src in order:
-        fig.add_bar(x=counts.index, y=counts[src], name=src,
+    for src in sources:
+        fig.add_bar(x=pd.to_datetime(df["date"]), y=df[src], name=src,
                     marker_color=SOURCE_COLOURS.get(src, MUTED),
-                    marker_line=dict(color=SURFACE, width=1),
+                    marker_line=dict(color=SURFACE, width=0.5),
                     hovertemplate="%{x|%a %d %b}<br>" + src + ": %{y}<extra></extra>")
-    fig.update_layout(barmode="stack")
-    return _layout(fig)
+    fig.update_layout(barmode="stack", bargap=0.18)
+    return _layout(fig, height=300)
 
 
-def horizontal_bars(labels: list[str], values: list[float], colours: list[str],
-                    fmt: str = ",.0f", height: int | None = None) -> go.Figure:
+def hbars(labels: list[str], values: list[float], colours: list[str], fmt: str = ",.0f",
+          prefix: str = "", height: int | None = None) -> go.Figure:
     fig = go.Figure()
     fig.add_bar(
-        y=labels, x=values, orientation="h", marker_color=colours, width=0.62,
-        text=[f"{v:{fmt}}" for v in values], textposition="outside",
-        textfont=dict(color=INK_2), cliponaxis=False,
-        hovertemplate="%{y}: %{x:" + fmt + "}<extra></extra>",
+        y=labels, x=values, orientation="h", marker_color=colours, width=0.6,
+        text=[f"{prefix}{v:{fmt}}" for v in values], textposition="outside",
+        textfont=dict(color=INK_2, size=11.5), cliponaxis=False,
+        hovertemplate="%{y}: " + prefix + "%{x:" + fmt + "}<extra></extra>",
     )
-    fig.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)", tickfont=dict(color=INK_2))
-    top = max(values) if len(values) and max(values) > 0 else 1
-    fig.update_xaxes(showticklabels=False, gridcolor="rgba(0,0,0,0)", range=[0, top * 1.22])
-    return _layout(fig, height=height or max(140, 46 * len(labels)), legend=False)
+    fig.update_yaxes(autorange="reversed", showgrid=False, tickfont=dict(color=INK_2, size=11.5))
+    top = max(values) if values and max(values) > 0 else 1
+    fig.update_xaxes(showticklabels=False, showgrid=False, range=[0, top * 1.25])
+    return _layout(fig, height=height or max(120, 38 * len(labels) + 20), legend=False)
 
 
-def threat_matrix(runs: pd.DataFrame) -> go.Figure:
-    """Agent surface x task grid. Cell colour = result status, cell text =
-    the result word, so status is never colour-only."""
-    latest = runs.sort_values("run_at").groupby(["agent_surface", "task_name"]).tail(1)
-    surfaces = sorted(latest["agent_surface"].unique())
-    tasks = list(dict.fromkeys(runs.sort_values("run_at")["task_name"]))
+def threat_matrix(cells: list[dict], surfaces: list[str], tasks: list[str]) -> go.Figure:
+    """Agent surface x task grid. Cell colour = result, cell text = the
+    result word, so status never relies on colour alone."""
     code = {"pass": 0, "partial": 1, "fail": 2}
+    lookup = {(c["agent_surface"], c["task"]): c for c in cells}
     z, txt, hover = [], [], []
     for sfc in surfaces:
         zr, tr, hr = [], [], []
         for t in tasks:
-            row = latest[(latest.agent_surface == sfc) & (latest.task_name == t)]
-            if row.empty:
+            c = lookup.get((sfc, t))
+            if c is None:
                 zr.append(None); tr.append(""); hr.append(f"{sfc} · {t}<br>Not run")
-            else:
-                r = row.iloc[0]
-                zr.append(code.get(r.result, None))
-                label = r.result.upper() + (" ⚠" if r.exploit_found else "")
-                tr.append(label)
-                hr.append(f"<b>{sfc} · {t}</b><br>{r.result} · {r.severity}<br>"
-                          + "<br>".join(_wrap(r.friction_notes or "", 60)))
+                continue
+            zr.append(code.get(c["result"]))
+            tr.append(c["result"].upper() + (" ⚠" if c["exploit"] else ""))
+            hr.append(f"<b>{sfc} · {t.replace('_', ' ')}</b><br>{c['result']} · {c['severity']}<br>"
+                      + "<br>".join(_wrap(c.get("notes") or "", 56)))
         z.append(zr); txt.append(tr); hover.append(hr)
     fig = go.Figure(go.Heatmap(
         z=z, x=[t.replace("_", " ") for t in tasks], y=surfaces, text=txt,
-        texttemplate="%{text}", textfont=dict(color=INK, size=12),
+        texttemplate="%{text}", textfont=dict(color=INK, size=11.5),
         hovertext=hover, hovertemplate="%{hovertext}<extra></extra>",
         colorscale=[[0, STATUS["pass"]], [0.5, STATUS["partial"]], [1, STATUS["fail"]]],
-        zmin=0, zmax=2, showscale=False, xgap=3, ygap=3,
+        zmin=0, zmax=2, showscale=False, xgap=4, ygap=4,
     ))
     fig.update_xaxes(side="top", tickfont=dict(color=INK_2), showgrid=False, showline=False)
     fig.update_yaxes(tickfont=dict(color=INK_2), autorange="reversed", showgrid=False)
-    return _layout(fig, height=90 + 56 * len(surfaces), legend=False)
+    return _layout(fig, height=80 + 54 * len(surfaces), legend=False)
 
 
-def severity_bars(runs: pd.DataFrame) -> go.Figure:
-    counts = runs["severity"].value_counts().reindex(SEVERITY_ORDER, fill_value=0)
-    counts = counts[counts > 0]
-    return horizontal_bars(list(counts.index), list(counts.values),
-                           [SEVERITY_COLOURS[k] for k in counts.index], fmt=",d")
+def severity_bars(by_severity: dict[str, int]) -> go.Figure:
+    keys = [k for k in SEVERITY_ORDER if by_severity.get(k)]
+    return hbars(keys, [by_severity[k] for k in keys], [SEVERITY_COLOURS[k] for k in keys], fmt=",d")
 
 
 def _wrap(text: str, width: int) -> list[str]:

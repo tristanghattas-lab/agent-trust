@@ -1,24 +1,17 @@
 """
-Agent Trust dashboard.
+Agent Trust: internal dashboard.
 
     streamlit run dashboard/app.py
 
-Reads live data from Postgres (DATABASE_URL). With no live traffic yet it
-falls back to a synthetic dataset (dashboard/demo_data.py) and says so in a
-banner on every view, so test data can't be mistaken for a real store.
-
-Views:
-  Overview          agent share of traffic, mix, funnel vs humans
-  AI referrals      people arriving from ChatGPT / Perplexity / Gemini / Copilot
-  Agent sessions    every classified session, with the signals behind it
-  Orders & outcomes revenue, order value, disputes and flagged orders by class
-  Threat testing    results of running real agents through the store
+Renders the metrics API's views (app/metrics.py) for one store. The store
+picker lists live stores plus "demo", the synthetic store; demo data is
+labelled on every page. This is the internal and demo tool: merchants will
+see the same numbers inside the Shopify app.
 """
 from __future__ import annotations
 
 import os
 import sys
-from datetime import timedelta
 
 import pandas as pd
 import streamlit as st
@@ -27,457 +20,364 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
-from dashboard import charts  # noqa: E402
-from dashboard.data import (  # noqa: E402
-    AGENT_CLASSES, ASSISTANT, AUTOMATION, CRAWLER, FIXES, HUMAN, SCRAPER, SEVERITY_ORDER,
-    explain, load,
-)
+from app.shops import DEMO_SHOP  # noqa: E402
+from dashboard import charts, client, ui  # noqa: E402
 
-st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide")
+st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
+                   initial_sidebar_state="expanded")
+ui.inject_css()
 
-st.markdown(
-    """
-    <style>
-      .block-container {padding-top: 2rem; max-width: 1280px;}
-      [data-testid="stMetricValue"] {font-size: 1.9rem; font-weight: 600;}
-      [data-testid="stMetricLabel"] p {font-size: 0.85rem; color: #52514e;}
-      .at-banner {border: 1px solid #fab219; background: #fff8e6; border-radius: 8px;
-                  padding: 10px 14px; margin: 4px 0 18px; color: #3d3000; font-size: 0.9rem;}
-      .at-banner.live {border-color: #0ca30c; background: #effaef; color: #063d06;}
-      .at-chip {display: inline-block; padding: 2px 9px; margin: 2px 4px 2px 0; border-radius: 999px;
-                background: #f0efec; color: #0b0b0b; font-size: 0.8rem;
-                border: 1px solid rgba(11,11,11,0.08);}
-      .at-sub {color: #52514e; font-size: 0.9rem; margin-top: -6px; margin-bottom: 10px;}
-      .at-sev {display:inline-block; padding: 1px 8px; border-radius: 4px; color: white;
-               font-size: 0.75rem; font-weight: 600; margin-right: 6px;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing"]
 
 
-def plot(fig):
-    st.plotly_chart(fig, use_container_width=True, theme=None,
-                    config={"displayModeBar": False})
+def plot(fig) -> None:
+    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
 
 
-def pct(n: float, d: float) -> str:
-    return f"{n / d:.1%}" if d else "—"
+def money(v) -> str:
+    return "—" if v is None else f"${v:,.0f}"
 
 
-MIN_N = 20  # smallest sample a rate is shown for
+def pct(v, digits: int = 1) -> str:
+    return "—" if v is None else f"{v * 100:.{digits}f}%"
 
 
-def money(v: float) -> str:
-    return f"${v:,.0f}"
+def rel(a, b) -> str | None:
+    if a is None or not b:
+        return None
+    return f"{(a / b - 1) * 100:+.0f}% vs other traffic"
+
+
+def shop_label(shop: str) -> str:
+    return "Demo store (synthetic)" if shop == DEMO_SHOP else shop
 
 
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### ◆ Agent Trust")
-    st.caption("Agent traffic intelligence for online stores")
-    source_choice = st.radio(
-        "Data source", ["Auto", "Live", "Demo"], index=0,
-        help="Auto uses live data when the tracker has recorded sessions, "
-             "otherwise the synthetic test dataset.",
-    )
-    window_days = st.select_slider("Window", options=[7, 14, 30], value=30,
-                                   format_func=lambda d: f"Last {d} days")
-    st.divider()
-    st.caption(
-        "Classes: **AI assistant** = a person's AI fetching pages for them. "
-        "**Browser automation** = an agent driving a real browser without "
-        "identifying itself. **AI crawler** = indexing/training bots. "
-        "**Scraper** = bulk dataset bots."
-    )
-
-
-@st.cache_data(ttl=120, show_spinner="Loading data…")
-def _load(choice: str):
-    return load(choice.lower())
-
-
-ds = _load(source_choice)
-
-# ---------------------------------------------------------------------------
-# Header + provenance banner
-# ---------------------------------------------------------------------------
-st.title("Agent traffic")
-if ds.is_demo:
     st.markdown(
-        f"<div class='at-banner'><b>TEST DATA.</b> Traffic, orders and outcomes are "
-        f"synthetic, generated to show how the dashboard reads. Agent behaviour patterns "
-        f"are modelled on real test runs against a Shopify dev store; volumes and rates "
-        f"are invented. {ds.note}</div>",
+        '<div class="at-brand"><div class="at-brand-mark">◆</div>'
+        '<div class="at-brand-name">Agent Trust</div></div>'
+        '<div class="at-brand-sub">Agent traffic intelligence</div>',
         unsafe_allow_html=True,
     )
-else:
-    st.markdown("<div class='at-banner live'><b>LIVE DATA</b> from the tracker and Shopify order feed.</div>",
-                unsafe_allow_html=True)
+    shop = st.selectbox("Store", client.shops(), format_func=shop_label)
+    st.markdown('<div class="at-side-label">Views</div>', unsafe_allow_html=True)
+    page = st.radio("Views", PAGES, key="nav", label_visibility="collapsed")
+    st.markdown('<div class="at-side-label">Period</div>', unsafe_allow_html=True)
+    days = st.radio("Period", [7, 30, 90], index=1, horizontal=True,
+                    format_func=lambda d: f"{d}d", label_visibility="collapsed")
+    st.markdown(
+        '<div class="at-side-label">Traffic classes</div>'
+        '<div class="at-brand-sub" style="margin-left:0;line-height:1.5">'
+        "<b>AI assistant</b>: a person's AI fetching pages for them.<br>"
+        "<b>Browser automation</b>: an agent driving a browser without saying so.<br>"
+        "<b>AI crawler</b>: indexing and training bots.<br>"
+        "<b>Scraper</b>: bulk dataset bots.</div>",
+        unsafe_allow_html=True,
+    )
 
-S_all = ds.sessions
-if S_all.empty:
-    st.info("No sessions recorded yet. Install the tracker, or switch the data source to Demo.")
-    st.stop()
 
-end = S_all["first_seen"].max()
-start = end - timedelta(days=window_days)
-S = S_all[S_all["first_seen"] > start].copy()
-O = ds.orders
-if not O.empty:
-    O = O[O["session_key"].isin(S["session_key"]) | O["created_at"].gt(start)].copy()
+def load(view: str, **params) -> dict:
+    try:
+        with st.spinner("Loading…"):
+            return client.get(view, shop, days, **params)
+    except Exception as exc:  # API asleep, DB unreachable
+        st.error(f"Couldn't load {view} for {shop_label(shop)}: {exc}")
+        st.stop()
 
-agents = S[S["traffic_class"] != HUMAN]
-humans = S[S["traffic_class"] == HUMAN]
-ai_ref = humans[humans["ai_source"].notna()]
 
-tab_over, tab_ref, tab_sess, tab_orders, tab_threat = st.tabs(
-    ["Overview", "AI referrals", "Agent sessions", "Orders & outcomes", "Threat testing"]
-)
+def header(title: str, data: dict, note: str = "", pill: str | None = None) -> None:
+    crumb = f"{shop_label(shop)} · last {days} days"
+    ui.page_header(title, crumb, demo=bool(data.get("synthetic")), note=note, live_label=pill)
+
+
+def empty(msg: str) -> None:
+    with st.container(border=True):
+        ui.card_title("Nothing here yet", msg)
+
 
 # ---------------------------------------------------------------------------
 # Overview
 # ---------------------------------------------------------------------------
-with tab_over:
-    # Compare the last 7 days with the first 7 days of the window: a
-    # week-on-week delta is mostly noise at these volumes.
-    span = timedelta(days=min(7, window_days / 2))
-    recent = S[S["first_seen"] > end - span]
-    before = S[S["first_seen"] <= start + span]
-    share_now = recent["is_agent"].mean() if len(recent) else 0
-    share_before = before["is_agent"].mean() if len(before) else 0
+if page == "Overview":
+    d = load("overview")
+    header("Overview", d)
+    k = d.get("kpis")
+    if not k:
+        empty("No traffic recorded for this store yet. Install the tracker to start.")
+        st.stop()
+    daily = d["daily"]
+    chg = k["agent_share_change_pts"] or 0
+    ui.kpi_row([
+        ui.kpi("Sessions", f"{k['sessions']:,}", f"{k['agent_sessions']:,} from agents",
+               spark=[r["total"] for r in daily], colour="#86b6ef"),
+        ui.kpi("Agent share of traffic", pct(k["agent_share"]), f"{chg:+.1f} pts over period",
+               tone="neutral", spark=[r["agent_share"] or 0 for r in daily],
+               help="Share of sessions from any agent class."),
+        ui.kpi("Visits referred by AI", f"{k['ai_referred_visits']:,}", "from AI assistants",
+               spark=[r["ai_referred"] for r in daily], colour="#4a3aa7",
+               help="People who clicked through from an AI assistant's answer."),
+        ui.kpi("AI-influenced revenue", money(k["ai_influenced_revenue"]),
+               f"{k['ai_influenced_orders']} orders", tone="up",
+               spark=pd.Series([r["ai_influenced_revenue"] or 0 for r in daily]).rolling(7, 1).mean(),
+               colour="#0ca30c",
+               help="Orders placed by an agent, or by a person an AI assistant referred."),
+        ui.kpi("Orders flagged", f"{k['flagged_orders']}", "need review",
+               tone="down" if k["flagged_orders"] else "neutral"),
+    ])
+    st.write("")
 
-    agent_orders = O[O["traffic_class"].isin(AGENT_CLASSES)] if not O.empty else O
-    ai_influenced = (
-        O[O["traffic_class"].isin(AGENT_CLASSES) | O["ai_source"].notna()] if not O.empty else O
-    )
-    flagged_orders = O[O["flags"].map(len) > 0] if not O.empty else O
+    left, right = st.columns([2, 1], gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Agent traffic", "Sessions per day by class. People excluded so the mix is visible.")
+        plot(charts.agent_traffic(daily))
+    with right, st.container(border=True):
+        ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
+        colour = {"high": "#d03b3b", "medium": "#eb6834", "info": "#2a78d6"}
+        items = [
+            {"ts": pd.Timestamp(a["ts"]), "colour": colour.get(a["severity"], "#c3c2b7"),
+             "text": ui.esc(a["text"]), "meta": a["detail"]}
+            for a in d["activity"][:6]
+        ]
+        ui.feed(items, pd.Timestamp(d["end"]))
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Sessions", f"{len(S):,}")
-    c2.metric("Agent share of traffic", pct(len(agents), len(S)),
-              f"{(share_now - share_before) * 100:+.1f} pts over window",
-              help="Share of sessions classified as any agent class.")
-    c3.metric("Visits referred by AI", f"{len(ai_ref):,}",
-              help="People who clicked through from ChatGPT, Perplexity, Gemini or Copilot.")
-    c4.metric("AI-influenced revenue",
-              money(ai_influenced["order_value"].sum()) if len(ai_influenced) else "$0",
-              f"{len(ai_influenced)} orders", delta_color="off",
-              help="Orders placed by an agent session or by a person referred from an AI assistant.")
-    c5.metric("Orders flagged", f"{len(flagged_orders)}",
-              help="Orders with a discount request in a free-text field, or a discount code used.",
-              delta_color="off")
-
-    left, right = st.columns([3, 2])
-    with left:
-        st.subheader("Agent sessions per day")
-        st.markdown("<div class='at-sub'>Humans excluded so the agent mix is visible.</div>",
-                    unsafe_allow_html=True)
-        plot(charts.agent_sessions_by_day(S))
-    with right:
-        st.subheader("Agent share of all traffic")
-        st.markdown("<div class='at-sub'>Daily points, 7-day average line.</div>",
-                    unsafe_allow_html=True)
-        plot(charts.agent_share_by_day(S))
-
-    left, right = st.columns([3, 2])
-    with left:
-        st.subheader("How far each kind of visitor gets")
-        st.markdown("<div class='at-sub'>Share of each segment's visits reaching each step.</div>",
-                    unsafe_allow_html=True)
-        segments = {
-            "All human visits": humans,
-            "AI-referred humans": ai_ref,
-            ASSISTANT: S[S["traffic_class"] == ASSISTANT],
-            AUTOMATION: S[S["traffic_class"] == AUTOMATION],
-        }
-        stage_cols = {"Viewed product": "st_view", "Added to cart": "st_cart",
-                      "Started checkout": "st_checkout", "Ordered": "st_ordered"}
-        # Product views are near 100% for agents and would flatten the
-        # steps that matter, so the chart starts at cart (views are in the table).
-        chart_stages = {k: v for k, v in stage_cols.items() if k != "Viewed product"}
-        funnel = pd.DataFrame(
-            {seg: {stage: df[col].mean() if len(df) else 0 for stage, col in chart_stages.items()}
-             for seg, df in segments.items()}
-        ).T
-        plot(charts.funnel_comparison(funnel))
-        counts = pd.DataFrame(
-            {seg: {"Visits": len(df), **{st_: int(df[c].sum()) for st_, c in stage_cols.items()}}
-             for seg, df in segments.items()}
-        ).T
-        with st.expander("Counts behind the chart"):
-            st.dataframe(counts, use_container_width=True)
-    with right:
-        st.subheader("Who the agents are")
-        st.markdown("<div class='at-sub'>Sessions by agent, this window.</div>",
-                    unsafe_allow_html=True)
-        top = agents.groupby(["agent_name", "traffic_class"]).size().reset_index(name="n")
-        top = top.sort_values("n", ascending=False).head(10)
-        plot(charts.horizontal_bars(
-            list(top["agent_name"]), list(top["n"]),
-            [charts.CLASS_COLOURS[c] for c in top["traffic_class"]], fmt=",d",
-        ))
+    left, right = st.columns([3, 2], gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Visitor journey", "Share of each segment's visits reaching each step.")
+        plot(charts.funnel(d["funnel"]))
+        with st.expander("Counts"):
+            st.dataframe(pd.DataFrame([{
+                "Segment": f["label"], "Visits": f["visits"], "Viewed product": f["viewed_product"],
+                "Added to cart": f["added_to_cart"], "Started checkout": f["started_checkout"],
+                "Ordered": f["ordered"]} for f in d["funnel"]]),
+                hide_index=True, use_container_width=True)
+    with right, st.container(border=True):
+        ui.card_title("Who the agents are", "Sessions by agent this period.")
+        top = d["top_agents"]
+        if top:
+            plot(charts.hbars([t["name"] for t in top], [t["sessions"] for t in top],
+                              [charts.CLASS_COLOURS[t["class"]] for t in top], fmt=",d"))
 
 # ---------------------------------------------------------------------------
 # AI referrals
 # ---------------------------------------------------------------------------
-with tab_ref:
-    other = humans[humans["ai_source"].isna()]
-    ref_orders = O[O["ai_source"].notna()] if not O.empty else O
-    other_orders = (
-        O[(O["traffic_class"] == HUMAN) & O["ai_source"].isna()] if not O.empty else O
-    )
-    conv_ai = ai_ref["st_ordered"].mean() if len(ai_ref) else 0
-    conv_other = other["st_ordered"].mean() if len(other) else 0
-    aov_ai = ref_orders["order_value"].mean() if len(ref_orders) else 0
-    aov_other = other_orders["order_value"].mean() if len(other_orders) else 0
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("AI-referred visits", f"{len(ai_ref):,}", f"{pct(len(ai_ref), len(humans))} of human visits",
-              delta_color="off")
-    c2.metric("Conversion", f"{conv_ai:.1%}",
-              f"{(conv_ai / conv_other - 1):+.0%} vs other traffic" if conv_other else None)
-    c3.metric("Average order", money(aov_ai) if aov_ai else "—",
-              f"{(aov_ai / aov_other - 1):+.0%} vs other traffic" if aov_other else None)
-    c4.metric("Revenue from AI referrals", money(ref_orders["order_value"].sum()) if len(ref_orders) else "$0",
-              f"{len(ref_orders)} orders", delta_color="off")
-
-    left, right = st.columns([3, 2])
-    with left:
-        st.subheader("Referrals per day by assistant")
-        plot(charts.ai_referrals_by_day(S))
-    with right:
-        st.subheader("Where they land")
-        land = ai_ref["landing_path"].fillna("/").value_counts().head(8)
-        plot(charts.horizontal_bars(
-            [p.replace("/products/", "").replace("/collections/", "▸ ") or "/" for p in land.index],
-            list(land.values), ["#4a3aa7"] * len(land), fmt=",d",
-        ))
-    st.caption(
-        "An AI-referred visit is a person, not an agent: someone asked an assistant, "
-        "got a recommendation with a link, and clicked it. This is the growth side of "
-        "agent traffic, and the number Shopify's own reports don't break out."
-    )
+elif page == "AI referrals":
+    d = load("referrals")
+    header("AI referrals", d)
+    k = d.get("kpis")
+    if not k:
+        empty("No visits from AI assistants in this period.")
+        st.stop()
+    ui.kpi_row([
+        ui.kpi("AI-referred visits", f"{k['visits']:,}",
+               f"{pct(k['share_of_human_visits'])} of human visits",
+               spark=[sum(v for kk, v in r.items() if kk != "date") for r in d["daily"]], colour="#4a3aa7"),
+        ui.kpi("Conversion", pct(k["conversion"]), rel(k["conversion"], k["conversion_other"]),
+               tone="up" if (k["conversion"] or 0) > (k["conversion_other"] or 0) else "down"),
+        ui.kpi("Average order", money(k["aov"]), rel(k["aov"], k["aov_other"]),
+               tone="up" if (k["aov"] or 0) > (k["aov_other"] or 0) else "down"),
+        ui.kpi("Revenue from AI referrals", money(k["revenue"]), f"{k['orders']} orders", tone="up"),
+    ])
+    st.write("")
+    left, right = st.columns([3, 2], gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Referrals per day", "By the assistant that sent them.")
+        plot(charts.referrals_daily(d["daily"], d["sources"]))
+    with right, st.container(border=True):
+        ui.card_title("By assistant", "Visits, orders and revenue.")
+        st.dataframe(pd.DataFrame([{
+            "Assistant": s["source"], "Visits": s["visits"], "Orders": s["orders"],
+            "Conversion": pct(s["conversion"]), "Revenue": money(s["revenue"])} for s in d["by_source"]]),
+            hide_index=True, use_container_width=True)
+        st.markdown(
+            '<div class="at-card-sub" style="margin-top:10px">An AI-referred visit is a person, not an '
+            "agent: someone asked an assistant, got a recommendation with a link, and clicked it. "
+            "Shopify's own reports don't break this out.</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        ui.card_title("Where they land", "Top landing pages for AI-referred visits.")
+        lp = d["landing_pages"][:8]
+        plot(charts.hbars(
+            [p["path"].replace("/products/", "").replace("/collections/", "▸ ") or "/" for p in lp],
+            [p["visits"] for p in lp], ["#4a3aa7"] * len(lp), fmt=",d"))
 
 # ---------------------------------------------------------------------------
 # Agent sessions
 # ---------------------------------------------------------------------------
-with tab_sess:
-    c1, c2, c3, c4 = st.columns(4)
-    for col, cls in zip([c1, c2, c3, c4], AGENT_CLASSES):
-        sub = S[S["traffic_class"] == cls]
-        col.metric(cls, f"{len(sub):,}",
-                   f"{int(sub['st_cart'].sum())} reached cart" if cls in (ASSISTANT, AUTOMATION) else
-                   f"{sub['js_executed'].mean():.0%} ran JavaScript" if len(sub) else None,
-                   delta_color="off")
+elif page == "Agent sessions":
+    classes = {"All agents": None, "AI assistant": "assistant", "Browser automation": "automation",
+               "AI crawler": "crawler", "Scraper": "scraper"}
+    base = load("sessions", limit=1)
+    header("Agent sessions", base)
+    counts = base.get("counts_by_class") or {}
+    if not counts:
+        empty("No agent sessions recorded for this store yet.")
+        st.stop()
+    ui.kpi_row([
+        ui.kpi(charts.CLASS_LABELS[c], f"{counts.get(c, 0):,}", colour=charts.CLASS_COLOURS[c])
+        for c in ["assistant", "automation", "crawler", "scraper"]
+    ])
+    st.write("")
 
-    pick = st.multiselect("Show", AGENT_CLASSES, default=AGENT_CLASSES,
-                          label_visibility="collapsed")
-    view = agents[agents["traffic_class"].isin(pick)].sort_values("first_seen", ascending=False)
+    with st.container(border=True):
+        ui.card_title("Sessions", "Every session classified as an agent, newest first.")
+        choice = st.radio("Class", list(classes), horizontal=True, label_visibility="collapsed")
+        data = load("sessions", cls=classes[choice], limit=300)
+        rows = data["sessions"]
+        st.dataframe(pd.DataFrame([{
+            "Seen": pd.Timestamp(r["first_seen"]).tz_convert("Australia/Sydney").strftime("%d %b %H:%M"),
+            "Agent": r["agent"], "Class": r["class_label"], "Confidence": r["confidence"],
+            "Landing page": r["landing_path"],
+            "Cart": "" if r["cart_value"] is None else money(r["cart_value"]),
+            "Ordered": r["ordered"], "Signals": r["signals"]} for r in rows]),
+            hide_index=True, use_container_width=True, height=330,
+            column_config={
+                "Confidence": st.column_config.ProgressColumn(format="%.2f", min_value=0, max_value=1),
+                "Ordered": st.column_config.CheckboxColumn()})
+        st.markdown(f'<div class="at-card-sub">Showing {len(rows)} of {data["total"]:,}.</div>',
+                    unsafe_allow_html=True)
 
-    table = pd.DataFrame({
-        "Seen": view["first_seen"].dt.tz_convert("Australia/Sydney").dt.strftime("%d %b %H:%M"),
-        "Class": view["traffic_class"],
-        "Agent": view["agent_name"],
-        "Confidence": view["classification_confidence"],
-        "Landing page": view["landing_path"],
-        "Cart ($)": view["cart_value"],
-        "Ordered": view["st_ordered"],
-        "Signals": view["reasons_list"].map(len),
-        "Session": view["session_key"],
-    })
-    st.dataframe(
-        table, use_container_width=True, hide_index=True, height=360,
-        column_config={
-            "Confidence": st.column_config.ProgressColumn(format="%.2f", min_value=0, max_value=1),
-            "Cart ($)": st.column_config.NumberColumn(format="$%.0f"),
-            "Ordered": st.column_config.CheckboxColumn(),
-        },
-    )
-
-    st.subheader("Why a session was flagged")
-    interesting = view[view["traffic_class"].isin([AUTOMATION, ASSISTANT])]
-    # Lead with sessions caught on behaviour alone: a declared user agent is
-    # the easy case; an undeclared agent that bought something is the story.
-    interesting = interesting.assign(
-        behaviour_only=~interesting["reasons_list"].map(lambda rs: any(r.startswith("ua_match") for r in rs))
-    ).sort_values(["behaviour_only", "st_ordered", "st_cart", "classification_confidence"],
-                  ascending=False)
-    options = interesting["session_key"].head(200).tolist() or view["session_key"].head(200).tolist()
-    if options:
-        key = st.selectbox(
-            "Session", options, label_visibility="collapsed",
-            format_func=lambda k: (lambda r: f"{r.agent_name} · {r.traffic_class} · "
-                                   f"{r.first_seen.tz_convert('Australia/Sydney'):%d %b %H:%M}"
-                                   + (" · ordered" if r.st_ordered else " · carted" if r.st_cart else ""))(
-                view.set_index("session_key").loc[k].rename(k)),
-        )
-        r = view.set_index("session_key").loc[key]
-        a, b = st.columns([3, 2])
-        with a:
-            st.markdown(f"**{r.agent_name}** — {r.traffic_class} · confidence **{r.classification_confidence:.2f}**")
-            for reason in r.reasons_list:
-                st.markdown(f"- {explain(reason)}")
-            if not r.reasons_list:
-                st.markdown("- No rule fired (classified from context)")
-        with b:
-            facts = {
-                "Landing page": r.landing_path or "—",
-                "Referrer": r.referrer or "none",
-                "Ran JavaScript": "yes" if r.js_executed else "no",
-                "Clicks / with no mouse trail": (
-                    f"{int(r.click_count)} / {int(r.sparse_trail_click_count)}"
-                    if pd.notna(r.click_count) else "—"),
-                "Fields filled / without keys": (
-                    f"{int(r.input_count)} / {int(r.keyless_input_count)}"
-                    if "input_count" in r and pd.notna(r.input_count) else "—"),
-                "Cart": money(r.cart_value) if pd.notna(r.cart_value) else "—",
-                "Checkout time": (f"{r.time_to_checkout_seconds:.0f}s"
-                                  if pd.notna(r.time_to_checkout_seconds) else "—"),
+    # Detail: lead with undeclared agents caught on behaviour that bought something.
+    pool = load("sessions", cls="automation", limit=300)["sessions"] + \
+        load("sessions", cls="assistant", limit=100)["sessions"]
+    pool.sort(key=lambda r: (r["behaviour_only"], r["ordered"], r["cart_value"] or 0), reverse=True)
+    if pool:
+        with st.container(border=True):
+            ui.card_title("Why a session was flagged", "Pick a session to see the evidence behind its class.")
+            labels = {
+                r["session_key"]: f"{r['agent']} · {r['class_label']} · "
+                f"{pd.Timestamp(r['first_seen']).tz_convert('Australia/Sydney'):%d %b %H:%M}"
+                + (" · ordered" if r["ordered"] else " · carted" if r["cart_value"] else "")
+                for r in pool[:150]
             }
-            st.table(pd.Series(facts, name="").to_frame())
+            key = st.selectbox("Session", list(labels), format_func=labels.get, label_visibility="collapsed")
+            det = load("session", session_key=key)
+            a, b = st.columns([3, 2], gap="large")
+            with a:
+                st.markdown(
+                    f'<div class="at-finding-title">{ui.esc(det["agent"])} '
+                    f'<span class="at-finding-meta">· {ui.esc(det["class_label"])} · confidence '
+                    f'{det["confidence"]:.2f}</span></div>', unsafe_allow_html=True)
+                dot = charts.CLASS_COLOURS.get(det["class"], "#898781")
+                sig = "".join(
+                    f'<div class="at-signal"><span style="color:{dot}">●</span>'
+                    f'<span>{ui.esc(x["text"])}</span></div>' for x in det["reasons"]
+                ) or '<div class="at-signal">No rule fired.</div>'
+                st.markdown(sig, unsafe_allow_html=True)
+            with b:
+                sd = det["signals_detail"]
 
-    if "_population" in S.columns:
-        with st.expander("Classifier check against known ground truth (test data only)"):
-            truth = {"human": HUMAN, "human_ai_referred": HUMAN, "assistant": ASSISTANT,
-                     "automation": AUTOMATION, "crawler": CRAWLER, "scraper": SCRAPER}
-            chk = S.assign(truth=S["_population"].map(truth))
-            acc = chk.groupby("truth").apply(
-                lambda g: pd.Series({"Sessions": len(g),
-                                     "Classified correctly": (g["traffic_class"] == g.name).mean()}),
-                include_groups=False,
-            )
-            st.dataframe(acc.style.format({"Classified correctly": "{:.1%}"}),
-                         use_container_width=True)
-            st.caption("Synthetic sessions are generated with a known population, then scored by "
-                       "the real rule-based classifier (app/classify.py). Misses show where the "
-                       "rules need work, e.g. automation sessions with too few clicks to judge.")
+                def pair(x, y):
+                    return "—" if x is None else f"{x} / {y if y is not None else 0}"
+
+                ui.kv_list({
+                    "Landing page": det["landing_path"] or "—",
+                    "Referrer": det["referrer"] or "none",
+                    "Ran JavaScript": "yes" if det["js_executed"] else "no",
+                    "Clicks / no mouse trail": pair(sd["clicks"], sd["clicks_without_mouse_trail"]),
+                    "Fields filled / no keys": pair(sd["fields_filled"], sd["fields_filled_without_keys"]),
+                    "Automation fingerprints": ", ".join(sd["automation_tells"]) or "none",
+                    "Cart": money(det["cart_value"]),
+                    "Checkout time": f"{sd['checkout_seconds']:.0f}s" if sd["checkout_seconds"] else "—",
+                })
 
 # ---------------------------------------------------------------------------
-# Orders & outcomes
+# Orders
 # ---------------------------------------------------------------------------
-with tab_orders:
-    if O.empty:
-        st.info("No orders recorded yet. Connect the Shopify order webhook to populate this view.")
+elif page == "Orders":
+    d = load("orders")
+    header("Orders", d)
+    k = d.get("kpis")
+    if not k:
+        empty("No orders recorded for this store yet. Connect the Shopify order webhook.")
+        st.stop()
+    n = d["min_sample"]
+    mult = k["agent_dispute_multiple"]
+    rate = k["agent_dispute_rate"]
+    if rate is None:
+        dispute_note, dispute_tone = f"needs {n}+ agent orders", "neutral"
+    elif mult is None:
+        dispute_note, dispute_tone = "human rate not yet measurable", "neutral"
     else:
-        bad = {"chargeback", "disputed"}
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Orders", f"{len(O):,}", money(O["order_value"].sum()), delta_color="off")
-        c2.metric("Placed by agents", f"{len(agent_orders)}",
-                  money(agent_orders["order_value"].sum()) if len(agent_orders) else "$0",
-                  delta_color="off")
-        ag_d = agent_orders["outcome_type"].isin(bad).mean() if len(agent_orders) else 0
-        hu = O[O["traffic_class"] == HUMAN]
-        hu_d = hu["outcome_type"].isin(bad).mean() if len(hu) else 0
-        if len(agent_orders) >= MIN_N:
-            c3.metric("Dispute rate: agent orders", f"{ag_d:.1%}",
-                      f"{ag_d / hu_d:.1f}× human rate" if hu_d else None, delta_color="inverse")
+        dispute_note = f"{mult:.1f}× the human rate"
+        dispute_tone = "down" if mult > 1 else "up"
+    ui.kpi_row([
+        ui.kpi("Orders", f"{k['orders']:,}", money(k["revenue"]) + " revenue"),
+        ui.kpi("Placed by agents", f"{k['agent_orders']:,}", money(k["agent_revenue"]) + " revenue",
+               colour=charts.CLASS_COLOURS["automation"]),
+        ui.kpi("Agent dispute rate", pct(rate), dispute_note, tone=dispute_tone,
+               help="Share of agent-placed orders that ended in a dispute or chargeback."),
+        ui.kpi("Orders flagged", f"{k['flagged_orders']}", "review before fulfilling",
+               tone="down" if k["flagged_orders"] else "neutral"),
+    ])
+    st.write("")
+    segs = [s for s in d["by_segment"] if s["orders"]]
+    left, right = st.columns(2, gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Average order value", "AUD, by who placed the order.")
+        plot(charts.hbars([f"{s['label']}  (n={s['orders']})" for s in segs], [s["aov"] for s in segs],
+                          [charts.SEGMENT_COLOURS[s["segment"]] for s in segs], fmt=",.0f", prefix="$"))
+    with right, st.container(border=True):
+        ui.card_title("Disputes and chargebacks", f"Segments with fewer than {n} orders are left out.")
+        rated = [s for s in segs if s["dispute_rate"] is not None]
+        if rated:
+            plot(charts.hbars([f"{s['label']}  (n={s['orders']})" for s in rated],
+                              [s["dispute_rate"] for s in rated],
+                              [charts.SEGMENT_COLOURS[s["segment"]] for s in rated], fmt=".1%"))
+    with st.container(border=True):
+        ui.card_title("Flagged orders", "Discount requests typed into address or note fields, and agent "
+                      "orders using discount codes. Models don't treat this as harmful, so agents keep trying.")
+        if d["flagged"]:
+            st.dataframe(pd.DataFrame([{
+                "Placed": pd.Timestamp(f["created_at"]).tz_convert("Australia/Sydney").strftime("%d %b %H:%M"),
+                "Order": f["shopify_order_id"], "Placed by": f["class_label"], "Value": money(f["order_value"]),
+                "Flag": " · ".join(f["flags"]), "Text found": f["free_text"] or "", "Outcome": f["outcome"],
+            } for f in d["flagged"]]), hide_index=True, use_container_width=True)
         else:
-            c3.metric("Dispute rate: agent orders", "—", f"only {len(agent_orders)} agent orders",
-                      delta_color="off",
-                      help=f"Shown once there are at least {MIN_N} agent orders in the window.")
-        c4.metric("Orders flagged", f"{len(flagged_orders)}", delta_color="off")
-
-        order_segments = {
-            "All human visits": O[(O["traffic_class"] == HUMAN) & O["ai_source"].isna()],
-            "AI-referred humans": O[O["ai_source"].notna()],
-            ASSISTANT: O[O["traffic_class"] == ASSISTANT],
-            AUTOMATION: O[O["traffic_class"] == AUTOMATION],
-        }
-        left, right = st.columns(2)
-        segs = [k for k, v in order_segments.items() if len(v)]
-        labels = [f"{k} (n={len(order_segments[k])})" for k in segs]
-        with left:
-            st.subheader("Average order value")
-            plot(charts.horizontal_bars(
-                labels, [order_segments[k]["order_value"].mean() for k in segs],
-                [charts.SEGMENT_COLOURS[k] for k in segs], fmt=",.0f",
-            ))
-            st.caption("Values in AUD.")
-        with right:
-            st.subheader("Disputes and chargebacks")
-            big = [k for k in segs if len(order_segments[k]) >= MIN_N]
-            if big:
-                plot(charts.horizontal_bars(
-                    [f"{k} (n={len(order_segments[k])})" for k in big],
-                    [order_segments[k]["outcome_type"].isin(bad).mean() for k in big],
-                    [charts.SEGMENT_COLOURS[k] for k in big], fmt=".1%",
-                ))
-            st.caption(f"Share of each segment's orders ending in a dispute or chargeback. "
-                       f"Segments with fewer than {MIN_N} orders are left out: the rate isn't meaningful yet.")
-
-        st.subheader("Flagged orders")
-        if flagged_orders.empty:
-            st.caption("Nothing flagged in this window.")
-        else:
-            fo = flagged_orders.sort_values("created_at", ascending=False)
-            st.dataframe(pd.DataFrame({
-                "Placed": fo["created_at"].dt.tz_convert("Australia/Sydney").dt.strftime("%d %b %H:%M"),
-                "Order": fo["shopify_order_id"],
-                "Class": fo["traffic_class"],
-                "Value": fo["order_value"],
-                "Flags": fo["flags"].map(" · ".join),
-                "Address / note text": fo["evidence"].map(
-                    lambda e: (e.get("shipping_address") or {}).get("address2") or e.get("note") or ""),
-                "Outcome": fo["outcome_type"],
-            }), use_container_width=True, hide_index=True,
-                column_config={"Value": st.column_config.NumberColumn(format="$%.0f")})
-            st.caption("Discount requests typed into address or note fields come straight from "
-                       "agent behaviour seen in testing: models don't treat this as harmful, so "
-                       "they keep trying. The control is whoever reads the order.")
+            st.markdown('<div class="at-card-sub">Nothing flagged this period.</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Threat testing
 # ---------------------------------------------------------------------------
-with tab_threat:
-    R = ds.runs
-    if R.empty:
-        st.info("No threat-test runs logged yet. Run agents through harness/tasks.py and log with "
-                "`python -m harness.log_run`.")
-    else:
-        st.markdown(
-            "<div class='at-sub'>Real agents run through buying and abuse tasks on the store. "
-            "These are actual test results, not synthetic"
-            + (" (icelabs dev store; run dates approximate)." if ds.is_demo and
-               (R["tester"] == "icelabs_manual").all() else ".")
-            + "</div>", unsafe_allow_html=True)
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Runs", len(R))
-        c2.metric("Agent surfaces", R["agent_surface"].nunique())
-        c3.metric("Exploit findings", int(R["exploit_found"].sum()))
-        c4.metric("Need review", int((R["severity"] == "Needs review").sum()))
-
-        left, right = st.columns([3, 1])
-        with left:
-            st.subheader("Results by agent and task")
-            st.markdown("<div class='at-sub'>Latest run per cell. ⚠ marks an exploit. "
-                        "Hover for the run notes.</div>", unsafe_allow_html=True)
-            plot(charts.threat_matrix(R))
-        with right:
-            st.subheader("Severity")
-            plot(charts.severity_bars(R))
-
-        st.subheader("Findings")
-        findings = R[R["severity"].isin(["High", "Medium", "Needs review", "Low"])].copy()
-        findings["rank"] = findings["severity"].map({s: i for i, s in enumerate(SEVERITY_ORDER)})
-        for _, f in findings.sort_values(["rank", "run_at"]).iterrows():
-            colour = charts.SEVERITY_COLOURS[f.severity]
-            text_colour = "#3d3000" if f.severity in ("Needs review",) else "white"
-            st.markdown(
-                f"<span class='at-sev' style='background:{colour};color:{text_colour}'>{f.severity}</span>"
-                f"**{f.task_name.replace('_', ' ').capitalize()}** · {f.agent_surface} · "
-                f"{f.run_at.tz_convert('Australia/Sydney'):%d %b}",
-                unsafe_allow_html=True,
-            )
-            st.markdown(f"{f.friction_notes}")
-            if f.task_name in FIXES:
-                st.markdown(f"<div class='at-sub'>Fix: {FIXES[f.task_name]}</div>", unsafe_allow_html=True)
-
-        with st.expander("All runs"):
-            st.dataframe(
-                R.sort_values("run_at", ascending=False)[
-                    ["run_at", "agent_surface", "task_name", "task_category", "result",
-                     "exploit_found", "severity", "friction_notes"]],
-                use_container_width=True, hide_index=True)
+elif page == "Threat testing":
+    d = load("threats")
+    header("Threat testing", d, pill="REAL RESULTS")
+    k = d.get("kpis")
+    if not k:
+        empty("No threat-test runs for this store yet. Run agents through harness/tasks.py.")
+        st.stop()
+    st.markdown('<div class="at-card-sub" style="margin:-6px 0 10px">Real agents run through buying and '
+                "abuse tasks on the store. These are actual test results, never synthetic.</div>",
+                unsafe_allow_html=True)
+    ui.kpi_row([
+        ui.kpi("Runs", f"{k['runs']}"),
+        ui.kpi("Agent surfaces", f"{k['agent_surfaces']}"),
+        ui.kpi("Exploits found", f"{k['exploits']}", "needs a fix" if k["exploits"] else None,
+               tone="down" if k["exploits"] else "neutral"),
+        ui.kpi("Need review", f"{k['needs_review']}"),
+    ])
+    st.write("")
+    left, right = st.columns([3, 1], gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Results by agent and task", "Latest run per cell. ⚠ marks an exploit; hover for notes.")
+        plot(charts.threat_matrix(d["matrix"], d["surfaces"], d["tasks"]))
+    with right, st.container(border=True):
+        ui.card_title("Severity")
+        plot(charts.severity_bars(k["by_severity"]))
+    with st.container(border=True):
+        ui.card_title("Findings", "What broke, and what to change.")
+        text_colour = {"Needs review": "#5c4400"}
+        rows = []
+        for f in d["findings"]:
+            bg = charts.SEVERITY_COLOURS[f["severity"]]
+            rows.append(
+                f'<div class="at-finding"><span class="at-sev" style="background:{bg};'
+                f'color:{text_colour.get(f["severity"], "white")}">{ui.esc(f["severity"])}</span>'
+                f'<span class="at-finding-title">{ui.esc(f["task"].replace("_", " ").capitalize())}</span>'
+                f'<span class="at-finding-meta"> · {ui.esc(f["agent_surface"])} · '
+                f'{pd.Timestamp(f["run_at"]).tz_convert("Australia/Sydney"):%d %b}</span>'
+                f'<div class="at-finding-body">{ui.esc(f["notes"])}</div>'
+                + (f'<div class="at-fix">Fix: {ui.esc(f["fix"])}</div>' if f["fix"] else "")
+                + "</div>")
+        st.markdown("".join(rows), unsafe_allow_html=True)
