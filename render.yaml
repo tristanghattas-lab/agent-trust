@@ -74,3 +74,15 @@ services:
         fromDatabase:
           name: agent-trust-db
           property: connectionString
+      # Same secrets as the API, so the Connections page can encrypt
+      # Cloudflare tokens the API can read, and show each store's Worker key.
+      - key: EDGE_SIGNING_SECRET
+        fromService:
+          type: web
+          name: agent-trust-api
+          envVarKey: EDGE_SIGNING_SECRET
+      - key: INTEGRATIONS_KEY
+        fromService:
+          type: web
+          name: agent-trust-api
+          envVarKey: INTEGRATIONS_KEY

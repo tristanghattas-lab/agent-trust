@@ -11,7 +11,9 @@ see the same numbers inside the Shopify app.
 from __future__ import annotations
 
 import os
+import secrets
 import sys
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -22,6 +24,8 @@ load_dotenv()
 
 from app.shops import DEMO_SHOP  # noqa: E402
 from dashboard import charts, client, ui  # noqa: E402
+
+WORKER_JS = (Path(__file__).resolve().parent.parent / "edge" / "worker.js").read_text()
 
 st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
@@ -521,7 +525,28 @@ elif page == "Connections":
         ui.card_title("Edge Worker (full detail)", "Per-session detail for traffic that never runs "
                       "JavaScript: signed agents, HTTP libraries, headless clients. Needs a Cloudflare "
                       "Worker deployed on the store's domain.")
-        st.markdown('<div class="at-card-sub">Setup: <code>python -m scripts.edge_key '
-                    f'{ui.esc(shop)}</code>, then follow <code>edge/README.md</code>.</div>',
-                    unsafe_allow_html=True)
-
+        try:
+            key = client.edge_key(shop)
+        except Exception as exc:
+            key = None
+            st.error(f"Couldn't create the Worker key: {exc}")
+        if key:
+            st.markdown(
+                '<div class="at-card-sub" style="line-height:1.6">'
+                "1. In Cloudflare: <b>Workers &amp; Pages → Create → Create Worker</b>, name it "
+                "<code>agent-trust-edge</code>, Deploy, then <b>Edit code</b>. Replace everything with the "
+                "code below and Deploy.<br>"
+                "2. <b>Settings → Variables and Secrets</b>: add the four values below "
+                "(the two marked secret as type <b>Secret</b>).<br>"
+                "3. <b>Settings → Domains &amp; Routes → Add → Route</b>: zone = the store's domain, "
+                "route = <code>yourdomain.com/*</code>. Add <code>www.yourdomain.com/*</code> too. Set "
+                "<b>Failure mode</b> to <b>Fail open (proceed)</b>.</div>",
+                unsafe_allow_html=True)
+            st.code(
+                f"AGENT_TRUST_INGEST_URL = {client.ingest_url()}\n"
+                f"AGENT_TRUST_SHOP       = {shop}\n"
+                f"AGENT_TRUST_EDGE_KEY   = {key}    (secret)\n"
+                f"IP_SALT                = {secrets.token_hex(24)}    (secret, any random string)",
+                language=None)
+            with st.expander("Worker code (copy all)"):
+                st.code(WORKER_JS, language="javascript")

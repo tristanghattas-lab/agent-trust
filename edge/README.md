@@ -38,6 +38,10 @@ can't be tracked across days.
 
 ## Setup
 
+No terminal needed: the dashboard's Connections page shows the store's key, the
+four settings and the Worker code to paste into Cloudflare (Workers & Pages →
+Create Worker → Edit code). Or with wrangler:
+
 ```bash
 # 1. Get the store's key (same EDGE_SIGNING_SECRET as the API)
 python -m scripts.edge_key <store>.myshopify.com

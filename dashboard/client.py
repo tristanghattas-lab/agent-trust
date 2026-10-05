@@ -133,6 +133,24 @@ def cf_disconnect(shop: str) -> dict:
     return _cf_local(drop)
 
 
+def edge_key(shop: str) -> str:
+    """The store's Worker key: from the API, or derived locally from the
+    same EDGE_SIGNING_SECRET the API uses."""
+    if API_URL and API_KEY:
+        r = requests.get(f"{API_URL}/edge/key", params={"shop": shop},
+                         headers={"Authorization": f"Bearer {API_KEY}"}, timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(r.text)
+        return r.json()["edge_key"]
+    from app.edge import edge_key as derive
+    return derive(shop)
+
+
+def ingest_url() -> str:
+    base = API_URL or os.getenv("AGENT_TRUST_API_URL", "https://agent-trust-api-o7u9.onrender.com")
+    return base.rstrip("/") + "/edge/ingest"
+
+
 def refresh_in_background(shop: str) -> None:
     """In-process mode: keep Cloudflare analytics fresh like the API does."""
     if shop == DEMO_SHOP or (API_URL and API_KEY) or _engine() is None:

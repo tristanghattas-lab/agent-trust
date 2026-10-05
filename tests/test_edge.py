@@ -114,3 +114,10 @@ def test_worker_signature_matches_api(tmp_path):
         "console.log([...new Uint8Array(s)].map(b=>b.toString(16).padStart(2,'0')).join(''));")
     out = subprocess.run(["node", str(script), key, body], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == sign(body.encode(), key)
+
+
+def test_edge_key_endpoint_needs_api_key(client):
+    assert client.get("/edge/key", params={"shop": SHOP}).status_code == 401
+    r = client.get("/edge/key", params={"shop": SHOP}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json()["edge_key"] == edge_key(SHOP)

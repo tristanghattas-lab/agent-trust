@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.analytics import HTTP_LIBRARIES, agent_file
 from app.classify import KNOWN_AGENT_UA_SUBSTRINGS, classify_session
 from app.db import get_db
+from app.metrics_api import require_api_key
 from app.models import Session as SessionModel
 from app.shops import normalise_shop
 
@@ -175,8 +176,21 @@ def _aware(dt):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoints
 # ---------------------------------------------------------------------------
+@router.get("/key", dependencies=[Depends(require_api_key)])
+def get_edge_key(shop: str):
+    """A store's Worker key, for setup screens. Server-to-server only
+    (Bearer METRICS_API_KEY), like the rest of the admin endpoints."""
+    shop_n = normalise_shop(shop)
+    if not shop_n:
+        raise HTTPException(status_code=400, detail="invalid shop")
+    if not os.getenv("EDGE_SIGNING_SECRET"):
+        raise HTTPException(status_code=503, detail="EDGE_SIGNING_SECRET not configured")
+    return {"shop": shop_n, "edge_key": edge_key(shop_n),
+            "ingest_url_path": "/edge/ingest"}
+
+
 @router.post("/ingest")
 async def ingest_edge(
     request: Request,
