@@ -24,7 +24,7 @@ order notification webhook with its per-store secret.
 
 ## 2. Your laptop (registers the app with Shopify, about 10 minutes)
 
-Needs Node.js 22.12 or newer (`node -v`; install the LTS from nodejs.org).
+Needs Node.js 22.15 or newer (`node -v`; install the LTS from nodejs.org).
 
 ```bash
 # Get the code (or GitHub → Code → Download ZIP, then unzip)
