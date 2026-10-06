@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
@@ -98,6 +99,22 @@ def get_session(session_key: str, shop: str = Depends(resolve_shop), days: int =
 @router.get("/orders", dependencies=deps)
 def get_orders(shop: str = Depends(resolve_shop), days: int = Days):
     return metrics.orders_summary(metrics.load_frames(engine, shop, days))
+
+
+@router.get("/report", dependencies=deps)
+def get_report(
+    shop: str = Depends(resolve_shop),
+    since: datetime | None = Query(None, description="ISO time; default 60 minutes ago"),
+    until: datetime | None = Query(None, description="ISO time; default now"),
+    include_bots: bool = False,
+):
+    """One-call review of a test run: sessions with evidence and linked orders."""
+    now = datetime.now(timezone.utc)
+    until = (until or now) if (until or now).tzinfo else (until or now).replace(tzinfo=timezone.utc)
+    since = since or until - timedelta(minutes=60)
+    since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+    days = max(1, min(365, (now - since).days + 1))
+    return metrics.run_report(metrics.load_frames(engine, shop, days), since, until, include_bots)
 
 
 @router.get("/threats", dependencies=deps)

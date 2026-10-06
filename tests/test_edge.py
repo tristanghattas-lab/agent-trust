@@ -190,3 +190,22 @@ def test_store_agent_api_calls_are_recorded_with_tools(client):
     blob = json.dumps(d)
     assert "search_catalog" in blob and "update_cart" in blob
     assert "agent API" in blob
+
+
+def test_run_report_returns_window_with_evidence_and_orders(client):
+    shop = "report-store.myshopify.com"
+    ua = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/129.0"
+    client.post("/ingest", json={"session_key": "s_rep_1", "shop": shop, "event_count": 3, "user_agent": ua,
+                                 "landing_path": "/?utm_source=claude.ai", "pointer_env": "fine",
+                                 "mouse_event_rate": 0.0, "teleport_click_ratio": 1.0,
+                                 "clicks_delta": 3, "sparse_trail_clicks_delta": 3})
+    post(client, [rec("/robots.txt", "GPTBot/1.2", ip="ipr")], shop=shop)  # crawler: filtered by default
+    auth = {"Authorization": f"Bearer {KEY}"}
+    rep = client.get(f"/metrics/report?shop={shop}", headers=auth).json()
+    assert rep["summary"]["sessions"] == 1
+    s = rep["sessions"][0]
+    assert s["agent"] == "Claude agent (likely)" and s["reasons"] and s["signals_detail"]["clicks"] == 3
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    allrep = client.get(f"/metrics/report?shop={shop}&include_bots=true&since={since}", headers=auth).json()
+    assert allrep["summary"]["sessions"] == 2

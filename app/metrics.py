@@ -604,6 +604,46 @@ def session_detail(f: Frames, session_key: str) -> dict | None:
     return out
 
 
+def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool = False) -> dict:
+    """Everything that happened in a time window, in one response: each
+    session with its full evidence, and each order with the session it was
+    linked to. Built for reviewing a test run ("what did the agent do between
+    19:14 and 19:17, and what did we catch?"). Crawlers and scrapers are left
+    out unless include_bots, because they drown out a single test."""
+    s, o = f.sessions, f.orders
+    out = _meta(f)
+    out.update(since=_iso(since), until=_iso(until))
+    sessions = []
+    if not s.empty:
+        last = s["last_seen"] if "last_seen" in s else s["first_seen"]
+        w = s[(s["first_seen"] <= until) & (last.fillna(s["first_seen"]) >= since)]
+        if not include_bots:
+            w = w[~w["traffic_class"].isin([CRAWLER, SCRAPER])]
+        for r in w.sort_values("first_seen").itertuples():
+            d = session_detail(f, r.session_key) or {}
+            sessions.append({k: d.get(k) for k in (
+                "session_key", "first_seen", "class_label", "agent", "confidence", "landing_path",
+                "referrer", "ai_source", "user_agent", "js_executed", "cart_value", "ordered",
+                "behaviour_only", "reasons", "signals_detail", "edge_requests")}
+                | {"last_seen": _iso(getattr(r, "last_seen", None))})
+    orders = []
+    if not o.empty:
+        w = o[(o["created_at"] >= since) & (o["created_at"] <= until)]
+        for r in w.sort_values("created_at").itertuples():
+            orders.append({
+                "shopify_order_id": r.shopify_order_id, "created_at": _iso(r.created_at),
+                "order_value": _num(r.order_value, 2), "is_test": bool(getattr(r, "is_test", False)),
+                "source_name": getattr(r, "source_name", None), "class_label": r.traffic_class,
+                "agent": getattr(r, "agent_name", None), "ai_source": r.ai_source,
+                "session_key": r.session_key, "session_match": getattr(r, "session_match_method", None),
+                "flags": list(r.flags),
+            })
+    out.update(sessions=sessions, orders=orders,
+               summary={"sessions": len(sessions), "agent_sessions": sum(x["class_label"] != HUMAN for x in sessions),
+                        "orders": len(orders), "agent_orders": sum(x["class_label"] not in (HUMAN, None) for x in orders)})
+    return out
+
+
 def _json_list(raw) -> list[str]:
     if not isinstance(raw, str) or not raw:
         return []
