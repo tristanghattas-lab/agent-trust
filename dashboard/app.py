@@ -31,7 +31,11 @@ st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
 ui.inject_css()
 
-PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing", "Connections"]
+PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing", "Run report", "Connections"]
+# Deep links: ?view=report&minutes=30&shop=<store> opens the run report directly.
+_qp = st.query_params
+if _qp.get("view") == "report" and "nav" not in st.session_state:
+    st.session_state["nav"] = "Run report"
 
 
 def plot(fig) -> None:
@@ -66,7 +70,10 @@ with st.sidebar:
         '<div class="at-brand-sub">Agent traffic intelligence</div>',
         unsafe_allow_html=True,
     )
-    shop = st.selectbox("Store", client.shops(), format_func=shop_label)
+    _shops = client.shops()
+    _want = _qp.get("shop")
+    shop = st.selectbox("Store", _shops, format_func=shop_label,
+                        index=_shops.index(_want) if _want in _shops else 0)
     st.markdown('<div class="at-side-label">Views</div>', unsafe_allow_html=True)
     page = st.radio("Views", PAGES, key="nav", label_visibility="collapsed")
     st.markdown('<div class="at-side-label">Period</div>', unsafe_allow_html=True)
@@ -463,6 +470,41 @@ elif page == "Threat testing":
 # ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
+elif page == "Run report":
+    import json as _json
+    ui.page_header("Run report", shop_label(shop), demo=shop == DEMO_SHOP, live_label="LIVE")
+    c1, c2 = st.columns([1, 1])
+    try:
+        default_min = int(_qp.get("minutes", 60))
+    except ValueError:
+        default_min = 60
+    minutes = c1.number_input("Last N minutes", 5, 60 * 24 * 7, min(max(default_min, 5), 60 * 24 * 7), step=5)
+    bots = c2.checkbox("Include crawlers and scrapers", value=_qp.get("bots") == "1")
+    rep = client.report(shop, int(minutes), bots)
+    sm = rep["summary"]
+    st.markdown(f"**{sm['sessions']} sessions** ({sm['agent_sessions']} agents) · "
+                f"**{sm['orders']} orders** ({sm['agent_orders']} by agents) · "
+                f"{rep['since'][:16].replace('T', ' ')} to {rep['until'][:16].replace('T', ' ')} UTC")
+    for x in rep["sessions"]:
+        with st.container(border=True):
+            st.markdown(f"**{x['agent'] or 'Human'}** · {x['class_label']} · conf {x['confidence']} · "
+                        f"{(x['first_seen'] or '')[11:19]}–{(x['last_seen'] or '')[11:19]} UTC"
+                        + (" · **ordered**" if x["ordered"] else ""))
+            st.caption(f"landing {x['landing_path']} · referrer {x['referrer'] or 'none'} · "
+                       f"AI source {x['ai_source'] or '—'} · JS {'yes' if x['js_executed'] else 'no'} · "
+                       f"cart {money(x['cart_value'])}")
+            for r in x.get("reasons") or []:
+                st.markdown(f"- {r['text']}")
+            if x.get("edge_requests"):
+                st.code("\n".join(x["edge_requests"]), language=None)
+    for o in rep["orders"]:
+        st.markdown(f"Order **{o['shopify_order_id']}** · ${o['order_value']:,.2f}"
+                    f"{' (test)' if o['is_test'] else ''} · {o['class_label']} · {o['agent'] or '—'} · "
+                    f"AI source {o['ai_source'] or '—'} · session {o['session_key'] or 'unmatched'}"
+                    f" ({o['session_match'] or '—'})")
+    with st.expander("Raw JSON"):
+        st.code(_json.dumps(rep, indent=1, default=str), language="json")
+
 elif page == "Connections":
     ui.page_header("Connections", shop_label(shop), demo=False, live_label="SETUP")
     if not client.connections_available():

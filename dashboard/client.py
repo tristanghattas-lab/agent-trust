@@ -95,6 +95,22 @@ def _cf_local(fn):
         db.close()
 
 
+def report(shop: str, minutes: int, include_bots: bool = False) -> dict:
+    """Test-run report for the last `minutes` (not cached: always fresh)."""
+    from datetime import datetime, timedelta, timezone
+    until = datetime.now(timezone.utc)
+    since = until - timedelta(minutes=minutes)
+    if API_URL and API_KEY:
+        r = requests.get(f"{API_URL}/metrics/report", headers={"Authorization": f"Bearer {API_KEY}"},
+                         params={"shop": shop, "since": since.isoformat(), "until": until.isoformat(),
+                                 "include_bots": str(include_bots).lower()}, timeout=90)
+        r.raise_for_status()
+        return r.json()
+    engine = _engine()
+    frames = metrics.load_frames(engine, shop, max(1, minutes // 1440 + 1))
+    return metrics.run_report(frames, since, until, include_bots)
+
+
 def connections_available() -> bool:
     return bool(API_URL and API_KEY) or _engine() is not None
 
