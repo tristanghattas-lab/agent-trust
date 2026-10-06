@@ -8,11 +8,12 @@ generator client {
 // Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
-// Postgres on Render (the same database as the Agent Trust API; Prisma owns
-// only the "Session" table, which holds each store's Shopify access token).
+// Postgres on Render: the same database as the Agent Trust API, but Prisma's
+// own schema ("shopify_app", see scripts/db-url.mjs), holding only the
+// "Session" table with each store's Shopify access token.
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = env("SHOPIFY_DATABASE_URL")
 }
 
 model Session {
