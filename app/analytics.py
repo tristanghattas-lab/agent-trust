@@ -79,6 +79,8 @@ def classify_traffic(row: pd.Series) -> str:
     verified = re.search(r"cf_verified:([^,]+)", reasons)
     if verified:
         return _verified_class(verified.group(1))
+    if "agent_api" in reasons:
+        return ASSISTANT  # shopping for someone through the store's own agent channel
     signed = re.search(r"signed_agent:([^,]+)", reasons)
     if signed:
         # Known assistant operators act for a person; other signers (SEO
@@ -197,6 +199,8 @@ def _agent_name(row: pd.Series) -> str:
         return f"{bot} (signed)" if bot else f"Signed bot ({signed.group(1)})"
     if "cf_verified:" in reasons:
         return "Verified bot (" + re.search(r"cf_verified:([^,]+)", reasons).group(1).replace("-", " ") + ")"
+    if "agent_api" in reasons:
+        return "Agent via store API"
     if "non_browser_client" in reasons:
         return "Headless client"
     if row.get("traffic_class") == AUTOMATION:
@@ -348,6 +352,7 @@ REASON_TEXT = {
     "keyless_inputs": "{v} form fields filled without a single key press",
     "signed_agent": "Signed its requests as an agent (Web Bot Auth, {v})",
     "cf_verified": "Cloudflare verified this bot: {v}",
+    "agent_api": "Called the store's agent API (UCP/MCP) instead of loading pages",
     "http_library": "Requests came from an HTTP library, not a browser ({v})",
     "non_browser_client": "Requests lacked the headers every real browser sends",
 }

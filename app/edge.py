@@ -46,6 +46,7 @@ router = APIRouter(prefix="/edge", tags=["edge"])
 SESSION_WINDOW_SECONDS = 30 * 60
 MAX_PATHS_PER_SESSION = 25
 MAX_BODY_BYTES = 256 * 1024
+AGENT_API = re.compile(r"^/api/(ucp|mcp)(/|$)")
 
 
 
@@ -90,6 +91,8 @@ class EdgeRecord(BaseModel):
     # The tracker's session key, from its first-party _at_sid cookie. Lets
     # request-level evidence join the browser session it belongs to.
     tracker_session: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    # Store agent API (UCP/MCP) tool called, e.g. search_catalog. Name only.
+    tool: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_./-]+$")
 
 
 class EdgeBatch(BaseModel):
@@ -103,6 +106,8 @@ def signals_for(r: EdgeRecord) -> set[str]:
     if r.signed or r.signature_agent:
         domain = _signature_domain(r.signature_agent) or "unknown"
         out.add(f"signed_agent:{domain}")
+    if AGENT_API.match(r.path or ""):
+        out.add("agent_api")
     if r.verified_category:
         out.add("verified_bot:" + re.sub(r"[^a-z0-9]+", "-", r.verified_category.lower()).strip("-"))
     lib = next((lib for lib in HTTP_LIBRARIES if lib in ua), None)
@@ -148,8 +153,9 @@ def _merge_into_tracker_session(db: DBSession, shop: str, r: EdgeRecord) -> Sess
     sig = set(filter(None, (s.edge_signals or "").split(","))) | signals_for(r)
     s.edge_signals = ",".join(sorted(sig)) or None
     paths = json.loads(s.edge_paths) if s.edge_paths else []
-    if r.path not in paths and len(paths) < MAX_PATHS_PER_SESSION:
-        paths.append(r.path)
+    entry = f"{r.path} → {r.tool}" if r.tool else r.path
+    if entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
+        paths.append(entry)
     s.edge_paths = json.dumps(paths)
     result = classify_model(s)
     s.is_agent = result.is_agent
@@ -192,8 +198,9 @@ def apply_record(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel:
     s.event_count = (s.event_count or 0) + 1
 
     paths = json.loads(s.edge_paths) if s.edge_paths else []
-    if r.path not in paths and len(paths) < MAX_PATHS_PER_SESSION:
-        paths.append(r.path)
+    entry = f"{r.path} → {r.tool}" if r.tool else r.path
+    if entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
+        paths.append(entry)
     s.edge_paths = json.dumps(paths)
     sig = set(filter(None, (s.edge_signals or "").split(","))) | signals_for(r)
     s.edge_signals = ",".join(sorted(sig)) or None
@@ -257,7 +264,8 @@ async def ingest_edge(
 
     stored = skipped = 0
     for r in batch.records:
-        if r.method.upper() not in ("GET", "HEAD") or is_browser_like(r):
+        api_call = bool(AGENT_API.match(r.path or ""))
+        if (r.method.upper() not in ("GET", "HEAD") and not api_call) or is_browser_like(r):
             skipped += 1
             continue
         apply_record(db, shop, r)

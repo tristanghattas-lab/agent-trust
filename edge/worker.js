@@ -35,6 +35,7 @@ const AGENT_FILES = [
   /^\/\.well-known\//,
   /\/products(\.json|\/[^/]+\.js(on)?)$/,
 ];
+const AGENT_API = /^\/api\/(ucp|mcp)(\/|$)/;
 const STATIC_EXT = /\.(css|js|mjs|map|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf|mp4|webm)$/i;
 const BOT_TOKENS = [
   "gptbot", "oai-searchbot", "chatgpt-user", "perplexitybot", "perplexity-user", "claudebot",
@@ -52,8 +53,11 @@ const HTTP_LIBRARIES = [
 export function forwardReason(request) {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
-  if (method !== "GET" && method !== "HEAD") return null;
   const path = url.pathname;
+  // The store's own agent API (Shopify UCP/MCP): agents search, cart and
+  // check out here without loading pages. Only agents call it.
+  if (AGENT_API.test(path) && (method === "POST" || method === "GET")) return "agent_api";
+  if (method !== "GET" && method !== "HEAD") return null;
   const isAgentFile = AGENT_FILES.some((re) => re.test(path));
   if (!isAgentFile && STATIC_EXT.test(path)) return null;
   if (path.startsWith("/checkout") || path.startsWith("/cdn/")) return null;
@@ -89,8 +93,26 @@ export function trackerSession(cookieHeader) {
   return m ? m[1] : null;
 }
 
+/** Which agent-API tool was called (MCP JSON-RPC "tools/call" name, e.g.
+ * search_catalog). Only the tool name is kept, never its arguments, which
+ * can hold addresses or other personal data. */
+export async function toolName(bodyCopy) {
+  if (!bodyCopy) return null;
+  try {
+    const text = (await bodyCopy.text()).slice(0, 16384);
+    const call = /"method"\s*:\s*"([a-zA-Z_/.-]{1,40})"/.exec(text);
+    if (call && call[1] === "tools/call") {
+      const name = /"params"\s*:\s*\{[^{}]*?"name"\s*:\s*"([A-Za-z0-9_.-]{1,64})"/.exec(text);
+      return name ? name[1] : "tools/call";
+    }
+    return call ? call[1] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 /** The record sent to Agent Trust. Header presence only, never values that identify a person. */
-export async function buildRecord(request, response, env, now = Date.now()) {
+export async function buildRecord(request, response, env, now = Date.now(), bodyCopy = null) {
   const h = request.headers;
   const url = new URL(request.url);
   const ip = h.get("cf-connecting-ip") || "";
@@ -117,6 +139,7 @@ export async function buildRecord(request, response, env, now = Date.now()) {
     verified_bot: typeof bm.verifiedBot === "boolean" ? bm.verifiedBot : null,
     verified_category: cf.verifiedBotCategory || null,
     tracker_session: trackerSession(h.get("cookie")),
+    tool: await toolName(bodyCopy),
   };
 }
 
@@ -135,11 +158,19 @@ export async function send(records, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    let reason = null;
+    let bodyCopy = null;
+    try {
+      reason = forwardReason(request);
+      if (reason === "agent_api" && request.method === "POST") bodyCopy = request.clone();
+    } catch (e) {
+      /* never let logging break the store */
+    }
     const response = await fetch(request); // the store's response, unchanged
     try {
-      if (forwardReason(request) && env.AGENT_TRUST_INGEST_URL && env.AGENT_TRUST_EDGE_KEY) {
+      if (reason && env.AGENT_TRUST_INGEST_URL && env.AGENT_TRUST_EDGE_KEY) {
         ctx.waitUntil(
-          buildRecord(request, response, env)
+          buildRecord(request, response, env, Date.now(), bodyCopy)
             .then((rec) => send([rec], env))
             .then(async (r) => {
               // Visible in the Worker's Observability > Logs. 401 = wrong

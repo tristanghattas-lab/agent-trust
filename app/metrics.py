@@ -588,6 +588,9 @@ def session_detail(f: Frames, session_key: str) -> dict | None:
         js_executed=bool(r.js_executed),
         ai_source=r.ai_source,
         reasons=[{"code": code, "text": explain(code)} for code in r.reasons_list],
+        # Requests seen at the edge, in order: pages, agent files, and store
+        # agent-API calls with the tool used ("/api/ucp/mcp → update_cart").
+        edge_requests=_json_list(getattr(r, "edge_paths", None)),
         signals_detail={
             "clicks": opt_int("click_count"),
             "clicks_without_mouse_trail": opt_int("sparse_trail_click_count"),
@@ -599,6 +602,16 @@ def session_detail(f: Frames, session_key: str) -> dict | None:
         },
     )
     return out
+
+
+def _json_list(raw) -> list[str]:
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        return [str(x) for x in v] if isinstance(v, list) else []
+    except ValueError:
+        return []
 
 
 def _real(o: pd.DataFrame) -> pd.DataFrame:

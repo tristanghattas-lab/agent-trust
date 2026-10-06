@@ -1,7 +1,7 @@
 // node --test edge/worker.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { forwardReason, buildRecord, trackerSession } from "./worker.js";
+import { forwardReason, buildRecord, trackerSession, toolName } from "./worker.js";
 
 const req = (path, headers = {}, method = "GET") =>
   new Request(`https://store.example${path}`, { method, headers });
@@ -20,6 +20,7 @@ test("static assets and checkout are ignored", () => {
   assert.equal(forwardReason(req("/assets/theme.css", { "user-agent": "curl/8.0" })), null);
   assert.equal(forwardReason(req("/checkout", { "user-agent": "curl/8.0" })), null);
   assert.equal(forwardReason(req("/products/x", { "user-agent": "curl/8.0" }, "POST")), null);
+  assert.equal(forwardReason(req("/cart/add", browser, "POST")), null);
 });
 
 test("declared bots, signed agents, libraries and headless clients are forwarded", () => {
@@ -58,4 +59,17 @@ test("tracker cookie and Cloudflare verified category are carried", async () => 
   assert.equal(rec.tracker_session, "s_k1_abc");
   assert.equal(rec.verified_category, null);
   assert.ok(!JSON.stringify(rec).includes("cart=zzz")); // no other cookie leaves Cloudflare
+});
+
+test("store agent API calls are forwarded with the tool name only", async () => {
+  assert.equal(forwardReason(req("/api/ucp/mcp", browser, "POST")), "agent_api");
+  assert.equal(forwardReason(req("/api/mcp", {}, "POST")), "agent_api");
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call",
+    params: { name: "update_cart", arguments: { address: "1 George St", email: "a@b.com" } } });
+  const r = new Request("https://store.example/api/ucp/mcp", { method: "POST", body,
+    headers: { "user-agent": "ChatGPT-User/1.0", "content-type": "application/json" } });
+  const rec = await buildRecord(r, new Response("ok"), { IP_SALT: "s" }, Date.now(), r.clone());
+  assert.equal(rec.tool, "update_cart");
+  assert.ok(!JSON.stringify(rec).includes("George")); // arguments never leave Cloudflare
+  assert.equal(await toolName(new Request("https://x/api/mcp", { method: "POST", body: '{"method":"tools/list"}' })), "tools/list");
 });

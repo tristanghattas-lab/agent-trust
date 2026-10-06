@@ -206,6 +206,12 @@ def classify_session(
             confidence += 0.6
             if agent_family == "unknown":
                 agent_family = SIGNED_AGENT_FAMILIES.get(val, "signed-agent")
+        elif kind == "agent_api":
+            # Called the store's agent API (Shopify UCP/MCP). Only agents do.
+            reasons.append("agent_api")
+            confidence += 0.6
+            if agent_family == "unknown":
+                agent_family = "store-agent-api"
         elif kind == "verified_bot":
             # Cloudflare's verified-bot category (request.cf.verifiedBotCategory,
             # free plan). Verified by Cloudflare, so stronger than a bare header.

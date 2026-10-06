@@ -171,3 +171,22 @@ def test_signed_seo_bot_is_a_crawler_not_an_assistant():
     row["traffic_class"] = classify_traffic(row)
     assert row["traffic_class"] == "AI crawler"
     assert agent_label(row) == "AhrefsBot (verified)"
+
+
+def test_store_agent_api_calls_are_recorded_with_tools(client):
+    shop = "ucp-store.myshopify.com"
+    ua = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 Chrome/129.0"
+    r = post(client, [
+        rec("/api/ucp/mcp", ua, ip="ipu", method="POST", tool="search_catalog"),
+        rec("/api/ucp/mcp", ua, ip="ipu", method="POST", tool="update_cart", ts=TS + 5000),
+        rec("/cart/add", ua, ip="ipu", method="POST", ts=TS + 6000),  # ordinary POST: still ignored
+    ], shop=shop)
+    assert r.json() == {"stored": 2, "skipped": 1}
+    rows = client.get(f"/metrics/sessions?shop={shop}&days=7", headers={"Authorization": f"Bearer {KEY}"}).json()["sessions"]
+    assert len(rows) == 1
+    assert rows[0]["agent"] == "Agent via store API" and rows[0]["class"] == "assistant"
+    d = client.get(f"/metrics/sessions/{rows[0]['session_key']}?shop={shop}",
+                   headers={"Authorization": f"Bearer {KEY}"}).json()
+    blob = json.dumps(d)
+    assert "search_catalog" in blob and "update_cart" in blob
+    assert "agent API" in blob

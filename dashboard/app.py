@@ -345,6 +345,11 @@ elif page == "Agent sessions":
                     "Cart": money(det["cart_value"]),
                     "Checkout time": f"{sd['checkout_seconds']:.0f}s" if sd["checkout_seconds"] else "—",
                 })
+                reqs = det.get("edge_requests") or []
+                if reqs:
+                    st.markdown('<div class="at-card-sub" style="margin-top:10px"><b>Requests seen at the edge'
+                                '</b></div>' + "".join(f'<div class="at-signal"><code>{ui.esc(x)}</code></div>'
+                                                       for x in reqs), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Orders
