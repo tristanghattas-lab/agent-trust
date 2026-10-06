@@ -160,3 +160,14 @@ def test_unknown_tracker_cookie_falls_back_to_edge_session(client):
     assert r.json()["stored"] == 1
     rows = client.get(f"/metrics/sessions?shop={shop}&days=7", headers={"Authorization": f"Bearer {KEY}"}).json()["sessions"]
     assert rows and rows[0]["session_key"].startswith("edge_")
+
+
+def test_signed_seo_bot_is_a_crawler_not_an_assistant():
+    import pandas as pd
+    from app.analytics import agent_label, classify_traffic
+    row = pd.Series({"user_agent": "Mozilla/5.0 (compatible; AhrefsBot/7.0)", "is_agent": True,
+                     "agent_family": "signed-agent",
+                     "classification_reasons": "signed_agent:ahrefs.com,cf_verified:search-engine-optimization"})
+    row["traffic_class"] = classify_traffic(row)
+    assert row["traffic_class"] == "AI crawler"
+    assert agent_label(row) == "AhrefsBot (verified)"

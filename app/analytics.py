@@ -76,21 +76,26 @@ def classify_traffic(row: pd.Series) -> str:
     reasons = row.get("classification_reasons") or ""
     # Checked before behaviour: an agent that signed its requests (or that
     # Cloudflare verified) has declared itself, even while driving a browser.
-    if "signed_agent:" in reasons:
-        return ASSISTANT
     verified = re.search(r"cf_verified:([^,]+)", reasons)
-    if verified and "assistant" in verified.group(1):
-        return ASSISTANT
+    if verified:
+        return _verified_class(verified.group(1))
+    signed = re.search(r"signed_agent:([^,]+)", reasons)
+    if signed:
+        # Known assistant operators act for a person; other signers (SEO
+        # tools, monitors) are crawlers that happen to sign.
+        return ASSISTANT if signed.group(1) in SIGNED_AGENT_NAMES else CRAWLER
     if row.get("agent_family") == "browser-use":
         return AUTOMATION
-    # A Web Bot Auth signature with no known user agent: an agent acting for
-    # someone (signed agents are typically user-directed). It declared itself
-    # cryptographically, so it's declared even if it drives a browser.
-    if "signed_agent:" in reasons:
+    return SCRAPER
+
+
+def _verified_class(category: str) -> str:
+    """Traffic class from Cloudflare's verified-bot category slug."""
+    c = category.lower()
+    if "assistant" in c or "agent" in c:
         return ASSISTANT
-    cat = re.search(r"cf_verified:([^,]+)", reasons)
-    if cat:
-        return ASSISTANT if "assistant" in cat.group(1) else CRAWLER if "crawler" in cat.group(1) else SCRAPER
+    if any(k in c for k in ("crawler", "search", "seo", "archiv", "monitor", "feed", "preview", "advertis")):
+        return CRAWLER
     return SCRAPER
 
 
@@ -157,6 +162,7 @@ SIGNED_AGENT_NAMES = {
     "chatgpt.com": "ChatGPT agent", "openai.com": "ChatGPT agent", "claude.ai": "Claude agent",
     "anthropic.com": "Claude agent", "perplexity.ai": "Perplexity agent", "google.com": "Gemini agent",
 }
+SIGNED_BOT_NAMES = {"ahrefs.com": "AhrefsBot", "semrush.com": "SemrushBot", "moz.com": "Moz"}
 
 
 def agent_label(row: pd.Series) -> str:
@@ -185,7 +191,10 @@ def _agent_name(row: pd.Series) -> str:
     signed = re.search(r"signed_agent:([^,]+)", reasons)
     if signed:
         known = SIGNED_AGENT_NAMES.get(signed.group(1))
-        return f"{known} (signed)" if known else f"Signed agent ({signed.group(1)})"
+        if known:
+            return f"{known} (signed)"
+        bot = SIGNED_BOT_NAMES.get(signed.group(1))
+        return f"{bot} (signed)" if bot else f"Signed bot ({signed.group(1)})"
     if "cf_verified:" in reasons:
         return "Verified bot (" + re.search(r"cf_verified:([^,]+)", reasons).group(1).replace("-", " ") + ")"
     if "non_browser_client" in reasons:
