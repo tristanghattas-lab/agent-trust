@@ -1,7 +1,7 @@
 # Agent Trust Shopify app configuration.
 # `shopify app config link` fills client_id; `shopify app deploy` pushes this
 # file (webhooks, scopes) and the extensions in extensions/ to Shopify.
-client_id = ""
+client_id = "4a32964cdf99eeee7b799f2247ad843d"
 name = "Agent Trust"
 # The Render URL of the agent-trust-shopify service (set after it's created).
 application_url = "https://agent-trust-shopify.onrender.com"
@@ -38,3 +38,8 @@ api_version = "2026-10"
 
 [pos]
 embedded = false
+
+[build]
+include_config_on_deploy = true
+# The app is hosted on Render, not a local tunnel: keep its URLs fixed.
+automatically_update_urls_on_dev = false
