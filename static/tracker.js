@@ -55,17 +55,25 @@
   }
   if (!inSample()) return;
 
+  // A session ends after 30 minutes without activity (the usual analytics
+  // rule), so a later visit from the same browser starts a new session
+  // instead of extending an old one.
+  var SESSION_IDLE_MS = 30 * 60 * 1000;
+
   function getSessionKey() {
     var key = "";
+    var now = Date.now();
     try {
       key = localStorage.getItem("_at_session");
+      var seen = parseInt(localStorage.getItem("_at_seen") || "0", 10);
+      if (key && (!seen || now - seen > SESSION_IDLE_MS)) key = "";
     } catch (e) {
       /* private mode / blocked storage — fall through to a per-load key */
     }
     if (!key) {
       key =
         "s_" +
-        Date.now().toString(36) +
+        now.toString(36) +
         "_" +
         Math.random().toString(36).slice(2, 10);
       try {
@@ -74,7 +82,16 @@
         /* ignore */
       }
     }
+    touchSession();
     return key;
+  }
+
+  function touchSession() {
+    try {
+      localStorage.setItem("_at_seen", String(Date.now()));
+    } catch (e) {
+      /* ignore */
+    }
   }
 
   var sessionKey = getSessionKey();
@@ -290,6 +307,7 @@
   }
 
   function post(payload) {
+    touchSession();
     var body = JSON.stringify(
       Object.assign(
         {
