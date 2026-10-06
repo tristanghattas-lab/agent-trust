@@ -62,12 +62,9 @@ services:
       - key: INTEGRATIONS_KEY
         generateValue: true
       # The Shopify app's client secret: it signs every webhook the app
-      # subscribes to. Entered once, on the agent-trust-shopify service.
+      # subscribes to. Same value as on agent-trust-shopify.
       - key: SHOPIFY_API_SECRET
-        fromService:
-          type: web
-          name: agent-trust-shopify
-          envVarKey: SHOPIFY_API_SECRET
+        sync: false
 
   - type: web
     name: agent-trust-dashboard

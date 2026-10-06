@@ -49,6 +49,7 @@ npx shopify app deploy
    - `SHOPIFY_API_SECRET` = Client secret
 3. Save, then **Manual Deploy** agent-trust-shopify, then agent-trust-api
    (the API uses the same secret to check webhook signatures).
+4. Also set `SHOPIFY_API_SECRET` (same Client secret) on **agent-trust-api**.
 
 ## 4. Allow order data
 
