@@ -226,3 +226,34 @@ class EdgeAggregate(Base):
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
     requests: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class CommerceEvent(Base):
+    """Cart, checkout and checkout-step events from inside Shopify.
+
+    source "webhook": carts/* and checkouts/* sent by the Agent Trust Shopify
+    app. These include carts built through Shopify's agent API (UCP/MCP on
+    the myshopify.com domain), which never touch the storefront, so a cart
+    with no tracker session attached is a sign it was built off-site.
+
+    source "pixel": checkout step timings from the app's web pixel (contact,
+    address, shipping, payment, completed). Step names and times only.
+
+    No names, emails, addresses or payment details are stored."""
+
+    __tablename__ = "commerce_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    source: Mapped[str] = mapped_column(String)          # "webhook" | "pixel"
+    topic: Mapped[str] = mapped_column(String)           # carts/create, checkout_completed ...
+    webhook_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    token: Mapped[str | None] = mapped_column(String, nullable=True, index=True)  # cart or checkout token
+    cart_token: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    session_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

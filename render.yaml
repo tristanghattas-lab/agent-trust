@@ -61,6 +61,13 @@ services:
       # Changing it means stores must reconnect.
       - key: INTEGRATIONS_KEY
         generateValue: true
+      # The Shopify app's client secret: it signs every webhook the app
+      # subscribes to. Entered once, on the agent-trust-shopify service.
+      - key: SHOPIFY_API_SECRET
+        fromService:
+          type: web
+          name: agent-trust-shopify
+          envVarKey: SHOPIFY_API_SECRET
 
   - type: web
     name: agent-trust-dashboard
@@ -87,3 +94,37 @@ services:
           type: web
           name: agent-trust-api
           envVarKey: INTEGRATIONS_KEY
+
+  # The Agent Trust Shopify app (shopify-app/): install flow, admin page,
+  # checkout pixel activation. Webhooks go straight to agent-trust-api.
+  - type: web
+    name: agent-trust-shopify
+    runtime: node
+    plan: free
+    rootDir: shopify-app
+    buildCommand: "npm install && npm run build"
+    startCommand: "npm run setup && npm run start"
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agent-trust-db
+          property: connectionString
+      # From the Shopify Partner dashboard (Apps > Agent Trust > Client
+      # credentials) after `shopify app config link`.
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SCOPES
+        value: read_orders,write_pixels,read_customer_events
+      - key: AGENT_TRUST_API_URL
+        value: https://agent-trust-api-o7u9.onrender.com
+      - key: AGENT_TRUST_DASHBOARD_URL
+        value: https://agent-trust-dashboard-mwnm.onrender.com
+      - key: METRICS_API_KEY
+        fromService:
+          type: web
+          name: agent-trust-api
+          envVarKey: METRICS_API_KEY

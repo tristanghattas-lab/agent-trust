@@ -1,0 +1,28 @@
+{%- comment -%}
+  Agent Trust tracker: an app embed, so merchants switch it on in the theme
+  editor (Theme settings > App embeds) instead of editing theme code. Loads
+  the same tracker.js as a manual install; it reads behaviour only (mouse,
+  clicks, typing cadence as counts), never what is typed.
+{%- endcomment -%}
+<script async
+  src="https://agent-trust-api-o7u9.onrender.com/tracker.js"
+  data-api="https://agent-trust-api-o7u9.onrender.com/ingest"
+  data-sample="{{ block.settings.sample | default: 1 }}"></script>
+
+{% schema %}
+{
+  "name": "Agent Trust tracker",
+  "target": "head",
+  "settings": [
+    {
+      "type": "range",
+      "id": "sample",
+      "label": "Share of visits tracked",
+      "min": 0.1,
+      "max": 1,
+      "step": 0.1,
+      "default": 1
+    }
+  ]
+}
+{% endschema %}

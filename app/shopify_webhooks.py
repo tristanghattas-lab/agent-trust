@@ -96,4 +96,9 @@ def _str_or_none(value) -> str | None:
 
 
 def get_webhook_secret() -> str:
-    return os.getenv("SHOPIFY_WEBHOOK_SECRET", "")
+    """Comma-separated secrets a webhook may be signed with: per-store
+    notification-webhook secrets (SHOPIFY_WEBHOOK_SECRET) plus the Agent
+    Trust Shopify app's secret (SHOPIFY_API_SECRET), which signs every
+    webhook the app subscribes to, for every store that installs it."""
+    parts = [os.getenv("SHOPIFY_WEBHOOK_SECRET", ""), os.getenv("SHOPIFY_API_SECRET", "")]
+    return ",".join(p for p in parts if p)

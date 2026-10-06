@@ -98,6 +98,8 @@ class Frames:
     coverage: dict | None = None
     # Hourly request counts from Cloudflare analytics (not sessions).
     agg: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Cart/checkout webhooks and checkout-pixel steps (Shopify app).
+    events: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @lru_cache(maxsize=2)
@@ -139,9 +141,13 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
                     "WHERE shop_domain = :shop AND hour > :start")
         except Exception:  # table not created yet on an older database
             agg = pd.DataFrame()
+        events = (q("SELECT * FROM commerce_events WHERE shop_domain = :shop AND occurred_at > :start")
+                  if _has_table(conn, "commerce_events") else pd.DataFrame())
         coverage = _live_coverage(conn, shop)
     s, o, _, r = enrich_frames(sessions, orders, outcomes, runs)
-    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg))
+    if not events.empty:
+        events["occurred_at"] = pd.to_datetime(events["occurred_at"], utc=True)
+    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg), events)
 
 
 def _enrich_agg(agg: pd.DataFrame) -> pd.DataFrame:
@@ -173,7 +179,8 @@ def _live_coverage(conn, shop: str) -> dict:
         "cloudflare": exists("SELECT 1 FROM integrations WHERE shop_domain = :shop "
                              "AND kind = 'cloudflare' AND last_error IS NULL "
                              "AND synced_through IS NOT NULL LIMIT 1") if _has_table(conn, "integrations") else False,
-        "pixel": False,  # not built yet
+        "pixel": exists("SELECT 1 FROM commerce_events WHERE shop_domain = :shop "
+                        "AND source = 'pixel' LIMIT 1") if _has_table(conn, "commerce_events") else False,
         "simulated": False,
     }
 
@@ -638,9 +645,31 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
                 "session_key": r.session_key, "session_match": getattr(r, "session_match_method", None),
                 "flags": list(r.flags),
             })
-    out.update(sessions=sessions, orders=orders,
+    ev = f.events
+    commerce, off_site = [], 0
+    if ev is not None and not ev.empty:
+        steps = ev[(ev["source"] == "pixel") & ev["session_key"].notna()].sort_values("occurred_at")
+        for x in sessions:
+            mine = steps[steps["session_key"] == x["session_key"]]
+            if not mine.empty:
+                t0 = mine["occurred_at"].iloc[0]
+                x["checkout_steps"] = [{"step": r.topic, "seconds": round((r.occurred_at - t0).total_seconds(), 1)}
+                                       for r in mine.itertuples()]
+        w = ev[(ev["occurred_at"] >= since) & (ev["occurred_at"] <= until) & (ev["source"] == "webhook")]
+        carts_with_session = set(ev.loc[ev["session_key"].notna() & ev["cart_token"].notna(), "cart_token"])
+        for r in w.sort_values("occurred_at").itertuples():
+            storefront = bool(r.session_key) or (r.cart_token in carts_with_session)
+            commerce.append({"topic": r.topic, "occurred_at": _iso(r.occurred_at),
+                             "token": (r.token or "")[-8:] or None, "session_key": r.session_key,
+                             "storefront_session": storefront, "total": _num(r.total, 2),
+                             "items": None if pd.isna(r.item_count) else int(r.item_count),
+                             "source_name": r.source_name})
+            if r.topic == "carts/create" and not storefront:
+                off_site += 1
+    out.update(sessions=sessions, orders=orders, commerce_events=commerce,
                summary={"sessions": len(sessions), "agent_sessions": sum(x["class_label"] != HUMAN for x in sessions),
-                        "orders": len(orders), "agent_orders": sum(x["class_label"] not in (HUMAN, None) for x in orders)})
+                        "orders": len(orders), "agent_orders": sum(x["class_label"] not in (HUMAN, None) for x in orders),
+                        "carts_without_storefront_session": off_site})
     return out
 
 

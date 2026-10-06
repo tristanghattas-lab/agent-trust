@@ -497,11 +497,24 @@ elif page == "Run report":
                 st.markdown(f"- {r['text']}")
             if x.get("edge_requests"):
                 st.code("\n".join(x["edge_requests"]), language=None)
+            if x.get("checkout_steps"):
+                st.caption("Checkout steps (pixel): " + " → ".join(
+                    f"{c['step'].replace('checkout_', '').replace('_submitted', '')} +{c['seconds']:.0f}s"
+                    for c in x["checkout_steps"]))
     for o in rep["orders"]:
         st.markdown(f"Order **{o['shopify_order_id']}** · ${o['order_value']:,.2f}"
                     f"{' (test)' if o['is_test'] else ''} · {o['class_label']} · {o['agent'] or '—'} · "
                     f"AI source {o['ai_source'] or '—'} · session {o['session_key'] or 'unmatched'}"
                     f" ({o['session_match'] or '—'})")
+    if rep.get("commerce_events"):
+        st.markdown(f"**Carts and checkouts from Shopify** · "
+                    f"{rep['summary'].get('carts_without_storefront_session', 0)} cart(s) built with no "
+                    f"storefront session (agent API or other off-site source)")
+        for c in rep["commerce_events"]:
+            st.caption(f"{c['occurred_at'][11:19]} UTC · {c['topic']} · …{c['token'] or '—'} · "
+                       f"{c['items']} items · {money(c['total'])} · "
+                       + ("storefront session " + (c['session_key'] or '(linked cart)') if c["storefront_session"]
+                          else "**no storefront session**"))
     with st.expander("Raw JSON"):
         st.code(_json.dumps(rep, indent=1, default=str), language="json")
 

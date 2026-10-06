@@ -1,0 +1,40 @@
+# Agent Trust Shopify app configuration.
+# `shopify app config link` fills client_id; `shopify app deploy` pushes this
+# file (webhooks, scopes) and the extensions in extensions/ to Shopify.
+client_id = ""
+name = "Agent Trust"
+# The Render URL of the agent-trust-shopify service (set after it's created).
+application_url = "https://agent-trust-shopify.onrender.com"
+embedded = true
+
+[access_scopes]
+# read_orders: order, cart and checkout webhooks.
+# write_pixels + read_customer_events: the checkout pixel.
+scopes = "read_orders,write_pixels,read_customer_events"
+
+[auth]
+redirect_urls = [ "https://agent-trust-shopify.onrender.com/auth/callback" ]
+
+[webhooks]
+api_version = "2026-10"
+
+  # Handled by the app itself: deletes the store's session on uninstall.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  # Sent straight to the Agent Trust API, signed with this app's secret.
+  # Orders: attribution, agent orders, dispute evidence.
+  [[webhooks.subscriptions]]
+  uri = "https://agent-trust-api-o7u9.onrender.com/webhooks/shopify/orders"
+  topics = [ "orders/create" ]
+
+  # Carts and checkouts: the only view of carts that agents build through
+  # Shopify's agent API (UCP/MCP on the myshopify.com domain), which never
+  # passes through the merchant's own site or Cloudflare.
+  [[webhooks.subscriptions]]
+  uri = "https://agent-trust-api-o7u9.onrender.com/webhooks/shopify/commerce"
+  topics = [ "carts/create", "carts/update", "checkouts/create", "checkouts/update" ]
+
+[pos]
+embedded = false

@@ -1,0 +1,22 @@
+type = "web_pixel_extension"
+name = "agent-trust-pixel"
+runtime_context = "strict"
+
+# Checkout timing is used to tell agent-completed checkouts from people.
+# Analytics consent only; nothing is sold or used for marketing.
+[customer_privacy]
+analytics = true
+marketing = false
+preferences = false
+sale_of_data = "disabled"
+
+[settings]
+type = "object"
+
+[settings.fields.shop]
+name = "Shop"
+description = "The store's myshopify domain (set automatically by the app)"
+type = "single_line_text_field"
+validations = [
+  { name = "min", value = "1" }
+]
