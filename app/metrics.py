@@ -450,7 +450,7 @@ def activity(f: Frames, limit: int = 10) -> list[dict]:
                 items.append({"ts": r.created_at, "kind": "agent_order", "severity": "medium",
                               "text": (f"{r.agent_name} placed a ${r.order_value:,.0f} order"
                                        if isinstance(getattr(r, "agent_name", None), str)
-                                       and not r.agent_name.startswith("Undeclared")
+                                       and r.agent_name != "Undeclared (behavioural)"
                                        else f"Undeclared agent placed a ${r.order_value:,.0f} order"),
                               "detail": "Caught on behaviour, not user agent", "order_id": r.shopify_order_id})
             elif r.traffic_class == AI_CHANNEL:

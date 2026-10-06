@@ -274,11 +274,14 @@ def enrich_frames(sessions: pd.DataFrame, orders: pd.DataFrame, outcomes: pd.Dat
         s["ai_source"] = s["ai_source"].where(s["ai_source"].notna(),
                                               s["landing_path"].map(ai_referral_source))
         # An undeclared browser agent that arrived through an AI assistant's
-        # link was most likely that assistant's agent. A hint, not proof:
-        # labelled "likely" until a signature confirms it.
+        # link. The link says where it came from, not who drove the browser:
+        # whoever builds a link sets its utm tag (a test where ChatGPT followed
+        # a ?utm_source=claude.ai link proved it). So the agent is never named
+        # from a link; only a user agent, signature or Cloudflare verification
+        # names it.
         hint = (s["traffic_class"] == AUTOMATION) & s["ai_source"].notna() \
             & (s["agent_name"] == "Undeclared (behavioural)")
-        s.loc[hint, "agent_name"] = s.loc[hint, "ai_source"] + " agent (likely)"
+        s.loc[hint, "agent_name"] = "Undeclared (via " + s.loc[hint, "ai_source"] + " link)"
         s["date"] = s["first_seen"].dt.tz_convert("Australia/Sydney").dt.date
         path = s["landing_path"].fillna("")
         ordered_keys = set(o["session_key"].dropna()) if not o.empty else set()

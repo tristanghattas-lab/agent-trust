@@ -137,4 +137,4 @@ def test_automation_via_ai_link_is_named_likely_agent(client):
         "teleport_click_ratio": 1.0, "clicks_delta": 3, "sparse_trail_clicks_delta": 3})
     s = client.get(f"/metrics/sessions?shop={shop}&days=7", headers={"Authorization": f"Bearer {KEY}"}).json()
     names = {r["agent"] for r in s["sessions"]}
-    assert "ChatGPT agent (likely)" in names, names
+    assert "Undeclared (via ChatGPT link)" in names, names

@@ -204,7 +204,7 @@ def test_run_report_returns_window_with_evidence_and_orders(client):
     rep = client.get(f"/metrics/report?shop={shop}", headers=auth).json()
     assert rep["summary"]["sessions"] == 1
     s = rep["sessions"][0]
-    assert s["agent"] == "Claude agent (likely)" and s["reasons"] and s["signals_detail"]["clicks"] == 3
+    assert s["agent"] == "Undeclared (via Claude link)" and s["reasons"] and s["signals_detail"]["clicks"] == 3
     from datetime import datetime, timedelta, timezone
     since = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     allrep = client.get(f"/metrics/report?shop={shop}&include_bots=true&since={since}", headers=auth).json()
