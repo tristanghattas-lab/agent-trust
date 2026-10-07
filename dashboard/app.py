@@ -147,7 +147,9 @@ if page == "Overview":
     # 1. Four numbers that answer "is AI making me money, and does anything need me?"
     ui.kpi_row([
         ui.kpi("Revenue from AI", money(ao.get("ai_revenue", k["ai_influenced_revenue"])),
-               f"{pct(ao.get('ai_revenue_share'))} of revenue · {ao.get('ai_orders', k['ai_influenced_orders'])} orders",
+               (f"{pct(ao.get('ai_revenue_share'))} of revenue · " if ao.get("ai_revenue_share") is not None else "")
+               + f"{ao.get('ai_orders', k['ai_influenced_orders'])} orders"
+               + (f" ({ao['ai_test_orders']} test, not counted)" if ao.get("ai_test_orders") else ""),
                colour="#0ca30c",
                help="Orders placed by an agent, inside an AI app, or by a person an AI assistant referred. "
                     "Test orders excluded."),
@@ -185,7 +187,8 @@ if page == "Overview":
     # 3. Where AI orders come from, and the latest ones.
     left, right = st.columns([1, 2], gap="medium")
     with left, st.container(border=True):
-        ui.card_title("Where orders come from", "Revenue by origin, test orders excluded.")
+        ui.card_title("Where orders come from", "Revenue by origin, test orders excluded"
+                      + (f" ({ao['test_orders']} test orders this period)." if ao.get("test_orders") else "."))
         bo = [b for b in ao.get("by_origin", []) if b["origin"] != "unmatched"]
         if bo:
             plot(charts.hbars([f"{b['label']}  ({b['orders']})" for b in bo], [b["revenue"] or 0 for b in bo],

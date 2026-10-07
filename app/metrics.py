@@ -997,7 +997,10 @@ def attention(f: Frames, rows: list[dict]) -> list[dict]:
     items = []
     hk = f.hooks
     if hk is not None and not hk.empty:
+        # Only failures since the topic last worked: a fixed setup stops alerting.
+        ok_at = hk[hk["outcome"] == "recorded"].groupby("topic")["received_at"].max()
         bad = hk[hk["outcome"].isin(["rejected", "error"])]
+        bad = bad[bad["received_at"] > bad["topic"].map(ok_at).fillna(pd.Timestamp(0, tz="UTC"))]
         recent = bad[bad["received_at"] > f.end - timedelta(days=1)]
         if len(recent):
             items.append({"severity": "high", "title": f"{len(recent)} Shopify webhook deliveries failed today",
@@ -1078,6 +1081,7 @@ def ai_orders_block(f: Frames) -> dict:
         "agent_orders": len([x for x in rows if x["origin"] in ("agent_placed", "agent_assisted", "agent", "ai_channel")]),
         "needs_review": sum(x["needs_review"] for x in rows),
         "test_orders": sum(x["is_test"] for x in rows),
+        "ai_test_orders": sum(x["is_test"] for x in rows if x["origin"] in AI_ORIGINS),
         **conv,
         "by_origin": by_origin,
         "recent_ai_orders": [x for x in rows if x["origin"] in AI_ORIGINS][:8],
