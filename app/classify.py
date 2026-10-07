@@ -174,9 +174,11 @@ def classify_session(
     # and real browsers never set it. Strong on its own; the others are
     # corroborating (a privacy browser can zero its languages, say).
     tells = [t for t in (automation_tells or "").split(",") if t]
-    if tells:
-        strong = {"webdriver", "playwright_globals", "chromedriver_globals", "phantom_globals"}
-        hit_strong = [t for t in tells if t in strong]
+    strong = {"webdriver", "playwright_globals", "chromedriver_globals", "phantom_globals"}
+    hit_strong = [t for t in tells if t in strong]
+    # Weak tells alone (zero_outer_window shows up in private windows and
+    # theme-editor previews too) only count alongside another signal.
+    if tells and (hit_strong or confidence > 0):
         reasons.append(f"automation_tells:{'+'.join(tells)}")
         confidence += 0.6 if hit_strong else 0.2
         if agent_family == "unknown":
