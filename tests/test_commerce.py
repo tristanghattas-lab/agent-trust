@@ -84,3 +84,10 @@ def test_pixel_steps_attach_to_the_session_and_light_up_coverage(client):
     ov = client.get(f"/metrics/overview?shop={SHOP}", headers=AUTH).json()
     src = {x["key"]: x["connected"] for x in ov["coverage"]["sources"]}
     assert src["pixel"] is True
+
+
+def test_rejected_webhooks_are_logged_for_diagnosis(client):
+    hook(client, "carts/update", {"token": "zz"}, "w-bad", secret="nope")
+    rep = client.get(f"/metrics/report?shop={SHOP}", headers=AUTH).json()
+    rej = [w for w in rep["webhook_deliveries"] if w["outcome"] == "rejected"]
+    assert rej and "invalid signature" in rej[0]["detail"] and "2 secret(s)" in rej[0]["detail"]

@@ -257,3 +257,17 @@ class CommerceEvent(Base):
     source_name: Mapped[str | None] = mapped_column(String, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class WebhookLog(Base):
+    """One row per webhook delivery outcome, for diagnosing setup (which
+    topics arrive, which are rejected and why). No payload is stored."""
+
+    __tablename__ = "webhook_log"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    topic: Mapped[str | None] = mapped_column(String, nullable=True)
+    outcome: Mapped[str] = mapped_column(String)   # recorded | duplicate | rejected | ignored | error
+    detail: Mapped[str | None] = mapped_column(String, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)

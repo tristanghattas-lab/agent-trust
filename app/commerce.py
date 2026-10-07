@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session as DBSession
 
 from app.db import get_db
-from app.models import CommerceEvent
+from app.models import CommerceEvent, WebhookLog
 from app.shopify_webhooks import SESSION_ATTRIBUTE_NAME, get_webhook_secret, verify_shopify_hmac
 from app.shops import normalise_shop
 
@@ -34,6 +34,15 @@ PIXEL_EVENTS = {
     "checkout_shipping_info_submitted", "payment_info_submitted", "checkout_completed",
 }
 MAX_PIXEL_BYTES = 4096
+
+
+def log_webhook(db: DBSession, shop: str | None, topic: str | None, outcome: str, detail: str | None = None) -> None:
+    """Best-effort delivery log; never breaks webhook handling."""
+    try:
+        db.add(WebhookLog(shop_domain=shop, topic=topic, outcome=outcome, detail=(detail or "")[:300] or None))
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 def _secrets() -> list[str]:
@@ -108,21 +117,28 @@ async def commerce_webhook(
     x_shopify_webhook_id: str | None = Header(default=None),
 ):
     raw = await request.body()
-    if not any(verify_shopify_hmac(raw, x_shopify_hmac_sha256, s) for s in _secrets()):
-        raise HTTPException(status_code=401, detail="invalid webhook signature")
     topic = (x_shopify_topic or "").lower()
     shop = normalise_shop(x_shopify_shop_domain)
+    secrets = _secrets()
+    if not any(verify_shopify_hmac(raw, x_shopify_hmac_sha256, s) for s in secrets):
+        log_webhook(db, shop, topic, "rejected", f"invalid signature ({len(secrets)} secret(s) configured)")
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
     if topic not in WEBHOOK_TOPICS or not shop:
+        log_webhook(db, shop, topic, "ignored")
         return {"status": "ignored"}
     if x_shopify_webhook_id and db.query(CommerceEvent).filter(
             CommerceEvent.webhook_id == x_shopify_webhook_id).first():
         return {"status": "duplicate"}
     try:
         payload = json.loads(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid JSON") from exc
-    db.add(event_from_webhook(shop, topic, payload, x_shopify_webhook_id))
-    db.commit()
+        db.add(event_from_webhook(shop, topic, payload, x_shopify_webhook_id))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        log_webhook(db, shop, topic, "error", f"{type(exc).__name__}: {exc}")
+        logger.exception("commerce webhook failed")
+        raise HTTPException(status_code=500, detail="could not record event") from exc
+    log_webhook(db, shop, topic, "recorded")
     return {"status": "recorded"}
 
 

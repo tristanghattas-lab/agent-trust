@@ -515,6 +515,11 @@ elif page == "Run report":
                        f"{c['items']} items · {money(c['total'])} · "
                        + ("storefront session " + (c['session_key'] or '(linked cart)') if c["storefront_session"]
                           else "**no storefront session**"))
+    if rep.get("webhook_deliveries"):
+        st.markdown("**Webhook deliveries**")
+        for w in rep["webhook_deliveries"]:
+            st.caption(f"{w['topic']} · {w['outcome']} ×{w['count']}" + (f" · {w['detail']}" if w["detail"] else "")
+                       + f" · last {w['last'][11:19]} UTC")
     with st.expander("Raw JSON"):
         st.code(_json.dumps(rep, indent=1, default=str), language="json")
 

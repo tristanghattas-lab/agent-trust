@@ -320,6 +320,9 @@ async def shopify_order_webhook(
         # verification, so this can't be silently bypassed by leaving
         # SHOPIFY_WEBHOOK_SECRET unset.
         logger.warning("Rejected Shopify webhook with invalid HMAC (topic=%s)", x_shopify_topic)
+        from app.commerce import log_webhook
+        log_webhook(db, normalise_shop(x_shopify_shop_domain), x_shopify_topic,
+                    "rejected", f"invalid signature ({len(secrets_)} secret(s) configured)")
         raise HTTPException(status_code=401, detail="invalid webhook signature")
 
     payload = await request.json()
@@ -368,6 +371,8 @@ async def shopify_order_webhook(
     db.add(order)
     db.commit()
     db.refresh(order)
+    from app.commerce import log_webhook
+    log_webhook(db, shop, x_shopify_topic or "orders/create", "recorded")
 
     return {
         "status": "recorded",

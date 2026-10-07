@@ -100,6 +100,8 @@ class Frames:
     agg: pd.DataFrame = field(default_factory=pd.DataFrame)
     # Cart/checkout webhooks and checkout-pixel steps (Shopify app).
     events: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Webhook delivery outcomes (setup diagnostics).
+    hooks: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @lru_cache(maxsize=2)
@@ -143,11 +145,16 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
             agg = pd.DataFrame()
         events = (q("SELECT * FROM commerce_events WHERE shop_domain = :shop AND occurred_at > :start")
                   if _has_table(conn, "commerce_events") else pd.DataFrame())
+        hooks = (q("SELECT topic, outcome, detail, received_at FROM webhook_log "
+                   "WHERE (shop_domain = :shop OR shop_domain IS NULL) AND received_at > :start")
+                 if _has_table(conn, "webhook_log") else pd.DataFrame())
         coverage = _live_coverage(conn, shop)
     s, o, _, r = enrich_frames(sessions, orders, outcomes, runs)
     if not events.empty:
         events["occurred_at"] = pd.to_datetime(events["occurred_at"], utc=True)
-    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg), events)
+    if not hooks.empty:
+        hooks["received_at"] = pd.to_datetime(hooks["received_at"], utc=True)
+    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg), events, hooks)
 
 
 def _enrich_agg(agg: pd.DataFrame) -> pd.DataFrame:
@@ -666,6 +673,14 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
                              "source_name": r.source_name})
             if r.topic == "carts/create" and not storefront:
                 off_site += 1
+    deliveries = []
+    hk = f.hooks
+    if hk is not None and not hk.empty:
+        hw = hk[(hk["received_at"] >= since) & (hk["received_at"] <= until)]
+        for (topic, outcome, detail), g in hw.groupby(["topic", "outcome", hk["detail"].fillna("")], dropna=False):
+            deliveries.append({"topic": topic, "outcome": outcome, "detail": detail or None, "count": int(len(g)),
+                               "last": _iso(g["received_at"].max())})
+    out.update(webhook_deliveries=deliveries)
     out.update(sessions=sessions, orders=orders, commerce_events=commerce,
                summary={"sessions": len(sessions), "agent_sessions": sum(x["class_label"] != HUMAN for x in sessions),
                         "orders": len(orders), "agent_orders": sum(x["class_label"] not in (HUMAN, None) for x in orders),
