@@ -40,6 +40,5 @@ api_version = "2026-10"
 embedded = false
 
 [build]
-include_config_on_deploy = true
 # The app is hosted on Render, not a local tunnel: keep its URLs fixed.
 automatically_update_urls_on_dev = false
