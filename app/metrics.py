@@ -114,6 +114,34 @@ def _demo_frames(day_key: str):
     return enrich_frames(d["sessions"], d["orders"], d["outcomes"], d["threat_test_runs"])
 
 
+def _demo_pixel(s: pd.DataFrame, o: pd.DataFrame) -> pd.DataFrame:
+    """Synthetic checkout-pixel steps for the demo store's agent orders, so
+    agent-placed vs agent-assisted shows. Modelled on test run 5: form steps
+    3-5s apart; about a third hand off to a person before payment."""
+    import numpy as np
+
+    if o.empty or s.empty:
+        return pd.DataFrame()
+    agentic = o[o["traffic_class"].isin([ASSISTANT, AUTOMATION]) & o["session_key"].notna()]
+    rng = np.random.default_rng(7)
+    rows = []
+    for r in agentic.itertuples():
+        t = r.created_at - timedelta(minutes=3)
+        handoff = rng.random() < 0.35
+        for step in FORM_STEPS:
+            t += timedelta(seconds=float(rng.uniform(3, 6)))
+            rows.append({"source": "pixel", "topic": step, "session_key": r.session_key, "occurred_at": t})
+        t += timedelta(seconds=float(rng.uniform(35, 120) if handoff else rng.uniform(2, 8)))
+        rows.append({"source": "pixel", "topic": "payment_info_submitted", "session_key": r.session_key,
+                     "occurred_at": t})
+        rows.append({"source": "pixel", "topic": "checkout_completed", "session_key": r.session_key,
+                     "occurred_at": t + timedelta(seconds=2)})
+    ev = pd.DataFrame(rows)
+    for col in ("cart_token", "order_id", "token", "total", "item_count", "source_name"):
+        ev[col] = None
+    return ev
+
+
 def load_frames(engine: Engine, shop: str, days: int) -> Frames:
     if shop == DEMO_SHOP:
         s, o, _, r = _demo_frames(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
@@ -121,8 +149,8 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
         start = end - timedelta(days=days)
         s = s[s["first_seen"] > start]
         o = o[o["created_at"] > start] if not o.empty else o
-        coverage = {"tracker": True, "orders": True, "edge": True, "pixel": False, "simulated": True}
-        return Frames(shop, "demo", s, o, r, start, end, days, coverage)
+        coverage = {"tracker": True, "orders": True, "edge": True, "pixel": True, "simulated": True}
+        return Frames(shop, "demo", s, o, r, start, end, days, coverage, events=_demo_pixel(s, o))
 
     end = pd.Timestamp.now(tz="UTC")
     start = end - timedelta(days=days)
@@ -396,6 +424,7 @@ def overview(f: Frames) -> dict:
         agent_files=agent_files(f),
         edge_agents=edge_agents(f),
         edge_since=edge_since.isoformat() if edge_since else None,
+        ai_orders=ai_orders_block(f),
     )
     return out
 
@@ -763,6 +792,297 @@ def orders_summary(f: Frames) -> dict:
         ],
     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Order origin and evidence
+# ---------------------------------------------------------------------------
+# Three kinds of AI order, kept apart (docs: metrics review): a person an AI
+# sent (ai_referred), an agent that built the cart but a person paid
+# (agent_assisted), and an agent that did it all (agent_placed). Without
+# checkout-pixel timings the last two can't be told apart ("agent").
+ORIGINS = {
+    "agent_placed": "Agent-placed",
+    "agent_assisted": "Agent-assisted",
+    "agent": "Agent order",
+    "ai_channel": "Inside an AI app",
+    "ai_referred": "AI-referred person",
+    "human": "Person",
+    "unmatched": "No session linked",
+}
+AI_ORIGINS = ["agent_placed", "agent_assisted", "agent", "ai_channel", "ai_referred"]
+# A pause this long between the last form step and payment means someone
+# took over (test run 5: steps 3-5s apart, then payment at +46s).
+HANDOFF_SECONDS = 30.0
+FORM_STEPS = ("checkout_started", "checkout_contact_info_submitted",
+              "checkout_address_info_submitted", "checkout_shipping_info_submitted")
+PAY_STEPS = ("payment_info_submitted", "checkout_completed")
+IDENTITY_LABELS = {
+    "verified": "Verified", "signed": "Signed, not verified",
+    "declared": "Declared in user agent", "undeclared": "Undeclared (behaviour only)",
+}
+# Value above which an agent order that didn't prove who it is gets a review.
+REVIEW_VALUE = 250.0
+
+
+def _pixel_by_session(f: Frames) -> dict[str, list[tuple[str, pd.Timestamp]]]:
+    ev = f.events
+    if ev is None or ev.empty or "source" not in ev:
+        return {}
+    px = ev[(ev["source"] == "pixel") & ev["session_key"].notna()].sort_values("occurred_at")
+    return {k: list(zip(g["topic"], g["occurred_at"])) for k, g in px.groupby("session_key")}
+
+
+def handoff_gap(steps: list[tuple[str, pd.Timestamp]]) -> float | None:
+    """Seconds from the last form step to payment, or None if not measurable."""
+    pay = [t for name, t in steps if name in PAY_STEPS]
+    if not pay:
+        return None
+    first_pay = min(pay)
+    form = [t for name, t in steps if name in FORM_STEPS and t <= first_pay]
+    if not form:
+        return None
+    return round((first_pay - max(form)).total_seconds(), 1)
+
+
+def identity_tier(cls: str | None, agent_name: str | None, reasons) -> str | None:
+    if cls not in AGENT_CLASSES:
+        return None
+    name = agent_name or ""
+    if "(verified)" in name:
+        return "verified"
+    if "(signed)" in name:
+        return "signed"
+    if any(str(c).startswith("ua_match") for c in (reasons if isinstance(reasons, list) else [])):
+        return "declared"
+    return "undeclared"
+
+
+def order_origin(cls: str | None, ai_source, steps) -> str:
+    if cls == AI_CHANNEL:
+        return "ai_channel"
+    if cls in AGENT_CLASSES:
+        gap = handoff_gap(steps) if steps else None
+        if gap is None:
+            return "agent"
+        return "agent_assisted" if gap >= HANDOFF_SECONDS else "agent_placed"
+    if cls == HUMAN:
+        return "ai_referred" if isinstance(ai_source, str) and ai_source else "human"
+    return "unmatched"
+
+
+def _str(v) -> str | None:
+    return v if isinstance(v, str) and v else (None if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+
+
+def _order_rows(f: Frames) -> list[dict]:
+    """Every order with its origin, agent identity and evidence status."""
+    o = f.orders
+    if o.empty:
+        return []
+    px = _pixel_by_session(f)
+    rows = []
+    for r in o.sort_values("created_at", ascending=False).itertuples():
+        steps = px.get(r.session_key) if isinstance(r.session_key, str) else None
+        origin = order_origin(r.traffic_class, r.ai_source, steps)
+        ident = identity_tier(r.traffic_class, r.agent_name, getattr(r, "reasons_list", None))
+        chain = _chain(r, steps, origin, ident)
+        is_test = str(getattr(r, "is_test", False)).lower() in ("true", "1", "1.0")
+        review = bool(r.flags) or (
+            origin in ("agent_placed", "agent") and ident in ("undeclared", "declared", "signed")
+            and (r.order_value or 0) >= REVIEW_VALUE and not is_test)
+        rows.append({
+            "order_id": r.id, "shopify_order_id": _str(r.shopify_order_id), "created_at": _iso(r.created_at),
+            "order_value": _num(r.order_value, 2), "is_test": is_test,
+            "origin": origin, "origin_label": ORIGINS[origin],
+            "class": CLASS_KEYS.get(r.traffic_class), "class_label": r.traffic_class,
+            "agent": _str(r.agent_name) if r.traffic_class in AGENT_ORDER_CLASSES else None,
+            "identity": ident, "identity_label": IDENTITY_LABELS.get(ident),
+            "confidence": _num(getattr(r, "classification_confidence", None), 2) if ident else None,
+            "ai_source": r.ai_source if isinstance(r.ai_source, str) else None,
+            "handoff_seconds": handoff_gap(steps) if steps else None,
+            "evidence_score": f"{sum(c['ok'] for c in chain)}/{len(chain)}",
+            "flags": list(r.flags), "needs_review": review, "outcome": _str(r.outcome_type),
+            "session_key": r.session_key if isinstance(r.session_key, str) else None,
+            "chain": chain,
+        })
+    return rows
+
+
+def _chain(r, steps, origin: str, ident: str | None) -> list[dict]:
+    """The evidence chain for one order: origin -> session -> identity ->
+    checkout -> order. Each link is present (ok) or missing, in plain words."""
+    has_session = isinstance(r.session_key, str) and bool(r.session_key)
+    src = r.ai_source if isinstance(r.ai_source, str) else None
+    landing = getattr(r, "landing_site", None)
+    if src:
+        origin_text = f"Arrived via {src}"
+    elif r.traffic_class == AI_CHANNEL:
+        origin_text = f"Placed inside {r.ai_channel or 'an AI app'}; never visited the store"
+    elif has_session:
+        origin_text = "Direct or non-AI referral"
+    else:
+        origin_text = f"Landing page from the order: {landing}" if isinstance(landing, str) and landing else "Unknown"
+    agentic = r.traffic_class in AGENT_CLASSES
+    conf = _num(getattr(r, "classification_confidence", None), 2)
+    chain = [
+        {"step": "Origin", "ok": bool(src) or has_session or r.traffic_class == AI_CHANNEL, "text": origin_text},
+        {"step": "Session", "ok": has_session,
+         "text": (f"{r.traffic_class}" + (f", confidence {conf:.2f}" if conf is not None else "")
+                  + (f" (matched by {r.session_match_method})" if isinstance(r.session_match_method, str) else ""))
+         if has_session else "No storefront session linked to this order"},
+    ]
+    if agentic:
+        chain.append({"step": "Agent identity", "ok": ident in ("verified", "signed"),
+                      "text": f"{r.agent_name}: {IDENTITY_LABELS.get(ident, 'unknown')}"})
+    if r.traffic_class == AI_CHANNEL:
+        chain = chain[:1]  # checkout happened inside the AI app: no session or steps to see
+    elif steps:
+        gap = handoff_gap(steps)
+        verdict = ("" if gap is None or not agentic else
+                   f"; {'handed off to a person' if gap >= HANDOFF_SECONDS else 'agent completed'} "
+                   f"({gap:.0f}s before payment)")
+        chain.append({"step": "Checkout", "ok": True, "text": f"{len(steps)} checkout steps recorded{verdict}"})
+    else:
+        chain.append({"step": "Checkout", "ok": False, "text": "Checkout steps not recorded (pixel)"})
+    chain.append({"step": "Order", "ok": True,
+                  "text": f"${(r.order_value or 0):,.2f}" + (" · test order" if str(getattr(r, "is_test", False)).lower() in ("true", "1", "1.0") else "")
+                  + (f" · {r.source_name}" if isinstance(getattr(r, 'source_name', None), str) else "")})
+    return chain
+
+
+def orders_list(f: Frames, limit: int = 200) -> dict:
+    out = _meta(f)
+    rows = _order_rows(f)
+    for x in rows:
+        x.pop("chain")
+    out.update(total=len(rows), orders=rows[:limit])
+    return out
+
+
+def order_detail(f: Frames, order_id: str) -> dict | None:
+    for x in _order_rows(f):
+        if order_id in (x["order_id"], x["shopify_order_id"]):
+            out = _meta(f)
+            out.update(x)
+            if x["session_key"]:
+                sd = session_detail(f, x["session_key"]) or {}
+                out["session"] = {k: sd.get(k) for k in (
+                    "first_seen", "landing_path", "referrer", "reasons", "signals_detail", "edge_requests")}
+            steps = _pixel_by_session(f).get(x["session_key"]) or []
+            if steps:
+                t0 = steps[0][1]
+                out["checkout_steps"] = [{"step": n, "seconds": round((t - t0).total_seconds(), 1)}
+                                         for n, t in steps]
+            return out
+    return None
+
+
+def _offsite_carts(f: Frames) -> tuple[int, int]:
+    """Carts created with no storefront session (Shopify's agent API, or
+    carts the tracker didn't see), and how many of those reached an order."""
+    ev = f.events
+    if ev is None or ev.empty or "source" not in ev:
+        return 0, 0
+    with_session = set(ev.loc[ev["session_key"].notna() & ev["cart_token"].notna(), "cart_token"])
+    carts = ev[(ev["source"] == "webhook") & (ev["topic"] == "carts/create")]
+    off = carts[carts["session_key"].isna() & ~carts["cart_token"].isin(with_session)]
+    ordered = ev.loc[ev["order_id"].notna(), "cart_token"] if "order_id" in ev else pd.Series(dtype=str)
+    return int(len(off)), int(off["cart_token"].isin(set(ordered.dropna())).sum())
+
+
+def attention(f: Frames, rows: list[dict]) -> list[dict]:
+    """Things a merchant should look at, most urgent first. Each has a
+    severity (high/medium/info), a title, one line of detail and where to go."""
+    items = []
+    hk = f.hooks
+    if hk is not None and not hk.empty:
+        bad = hk[hk["outcome"].isin(["rejected", "error"])]
+        recent = bad[bad["received_at"] > f.end - timedelta(days=1)]
+        if len(recent):
+            items.append({"severity": "high", "title": f"{len(recent)} Shopify webhook deliveries failed today",
+                          "detail": str(recent.sort_values("received_at")["detail"].dropna().iloc[-1]
+                                        if recent["detail"].notna().any() else recent["outcome"].iloc[-1]),
+                          "page": "Connections"})
+    flagged = [x for x in rows if x["flags"]]
+    if flagged:
+        items.append({"severity": "high", "title": f"{len(flagged)} order{'s' if len(flagged) != 1 else ''} flagged",
+                      "detail": flagged[0]["flags"][0], "page": "Orders"})
+    unproven = [x for x in rows if x["needs_review"] and not x["flags"]]
+    if unproven:
+        v = sum(x["order_value"] or 0 for x in unproven)
+        items.append({"severity": "medium",
+                      "title": f"{len(unproven)} agent order{'s' if len(unproven) != 1 else ''} over "
+                               f"${REVIEW_VALUE:,.0f} from agents that didn't prove who they are",
+                      "detail": f"${v:,.0f} in total. Check the evidence before fulfilling.", "page": "Orders"})
+    off, off_ordered = _offsite_carts(f)
+    if off:
+        items.append({"severity": "medium",
+                      "title": f"{off} cart{'s' if off != 1 else ''} built off your storefront",
+                      "detail": f"Likely Shopify's agent API (never touches your site). {off_ordered} became orders.",
+                      "page": "Run report"})
+    s = f.sessions
+    if not s.empty:
+        ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
+        stuck = ag[ag["st_checkout"] & ~ag["st_ordered"]]
+        if len(stuck):
+            items.append({"severity": "info",
+                          "title": f"{len(stuck)} agent checkout{'s' if len(stuck) != 1 else ''} abandoned",
+                          "detail": "Agents reached checkout and stopped. Payment methods agents can't use "
+                                    "are the usual cause.", "page": "Agent sessions"})
+    cov = f.coverage or {}
+    if not cov.get("simulated"):
+        if cov.get("tracker") and not cov.get("pixel"):
+            items.append({"severity": "info", "title": "Checkout pixel not reporting",
+                          "detail": "Without it, agent-placed and agent-assisted orders can't be told apart.",
+                          "page": "Connections"})
+        if not cov.get("edge") and not cov.get("cloudflare"):
+            items.append({"severity": "info", "title": "No edge data",
+                          "detail": "Crawlers and fetch-only assistants are invisible. Connect Cloudflare.",
+                          "page": "Connections"})
+    return items
+
+
+def ai_orders_block(f: Frames) -> dict:
+    """Origin breakdown, agent conversion and the attention list, for the
+    overview (also usable by the Shopify app)."""
+    rows = _order_rows(f)
+    real = [x for x in rows if not x["is_test"]]
+    total_rev = sum(x["order_value"] or 0 for x in real)
+    by_origin = []
+    for key in AI_ORIGINS + ["human", "unmatched"]:
+        mine = [x for x in rows if x["origin"] == key]
+        if not mine:
+            continue
+        rev = sum(x["order_value"] or 0 for x in mine if not x["is_test"])
+        by_origin.append({"origin": key, "label": ORIGINS[key], "orders": len(mine),
+                          "test_orders": sum(x["is_test"] for x in mine), "revenue": _num(rev, 2),
+                          "aov": _num(sum(x["order_value"] or 0 for x in mine) / len(mine), 2)})
+    ai = [x for x in real if x["origin"] in AI_ORIGINS]
+    agent = [x for x in real if x["origin"] in ("agent_placed", "agent_assisted", "agent", "ai_channel")]
+    s = f.sessions
+    conv = {}
+    if not s.empty:
+        ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
+        hu = s[s["traffic_class"] == HUMAN]
+        conv = {"agent_conversion": _ratio(int(ag["st_ordered"].sum()), len(ag)),
+                "human_conversion": _ratio(int(hu["st_ordered"].sum()), len(hu)),
+                "agent_browser_sessions": int(len(ag))}
+    for x in rows:
+        x.pop("chain", None)
+    return {
+        "ai_revenue": _num(sum(x["order_value"] or 0 for x in ai), 2),
+        "ai_revenue_share": _ratio(sum(x["order_value"] or 0 for x in ai), total_rev),
+        "ai_orders": len([x for x in rows if x["origin"] in AI_ORIGINS]),
+        "agent_revenue": _num(sum(x["order_value"] or 0 for x in agent), 2),
+        "agent_orders": len([x for x in rows if x["origin"] in ("agent_placed", "agent_assisted", "agent", "ai_channel")]),
+        "needs_review": sum(x["needs_review"] for x in rows),
+        "test_orders": sum(x["is_test"] for x in rows),
+        **conv,
+        "by_origin": by_origin,
+        "recent_ai_orders": [x for x in rows if x["origin"] in AI_ORIGINS][:8],
+        "attention": attention(f, rows),
+    }
 
 
 def threats(f: Frames) -> dict:

@@ -298,10 +298,11 @@ def enrich_frames(sessions: pd.DataFrame, orders: pd.DataFrame, outcomes: pd.Dat
         o["flags"] = o["evidence"].map(order_flags)
         if not s.empty:
             o = o.merge(
-                s[["session_key", "traffic_class", "agent_name", "ai_source"]],
+                s[["session_key", "traffic_class", "agent_name", "ai_source",
+                   "classification_confidence", "reasons_list"]],
                 on="session_key", how="left",
             )
-        for col in ("traffic_class", "agent_name", "ai_source"):
+        for col in ("traffic_class", "agent_name", "ai_source", "classification_confidence", "reasons_list"):
             if col not in o:  # no sessions to join (e.g. tracker not installed)
                 o[col] = None
         for col in ("source_name", "app_id", "landing_site", "referring_site"):

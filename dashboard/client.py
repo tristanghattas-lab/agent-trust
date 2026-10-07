@@ -38,7 +38,14 @@ def _engine():
 @st.cache_data(ttl=120, show_spinner=False)
 def get(view: str, shop: str, days: int, **params) -> dict:
     if API_URL and API_KEY:
-        path = f"/metrics/sessions/{params.pop('session_key')}" if view == "session" else f"/metrics/{view}"
+        if view == "session":
+            path = f"/metrics/sessions/{params.pop('session_key')}"
+        elif view == "order":
+            path = f"/metrics/orders/{params.pop('order_id')}"
+        elif view == "orders_list":
+            path = "/metrics/orders/list"
+        else:
+            path = f"/metrics/{view}"
         if "cls" in params:
             params["class"] = params.pop("cls")
         r = requests.get(API_URL + path, params={"shop": shop, "days": days, **params},
@@ -55,6 +62,10 @@ def get(view: str, shop: str, days: int, **params) -> dict:
                                      params.get("offset", 0))
     if view == "session":
         return metrics.session_detail(frames, params["session_key"]) or {}
+    if view == "order":
+        return metrics.order_detail(frames, params["order_id"]) or {}
+    if view == "orders_list":
+        return metrics.orders_list(frames, params.get("limit", 200))
     return _VIEWS[view](frames)
 
 

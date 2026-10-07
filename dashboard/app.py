@@ -139,73 +139,92 @@ if page == "Overview":
                               [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots], fmt=",d"))
         st.stop()
     daily = d["daily"]
-    chg = k["agent_share_change_pts"] or 0
     shown = visible_classes(d)
+    ao = d.get("ai_orders") or {}
+    ac, hc = ao.get("agent_conversion"), ao.get("human_conversion")
+    review = ao.get("needs_review", k["flagged_orders"])
+
+    # 1. Four numbers that answer "is AI making me money, and does anything need me?"
     ui.kpi_row([
-        ui.kpi("Sessions", f"{k['sessions']:,}", f"{k['agent_sessions']:,} from agents",
-               spark=[r["total"] for r in daily], colour="#86b6ef"),
-        ui.kpi("Agent share of traffic" if "crawler" in shown else "Agent share (browser-visible)",
-               pct(k["agent_share"]), f"{chg:+.1f} pts over period",
-               tone="neutral", spark=[r["agent_share"] or 0 for r in daily],
-               help="Share of sessions from agents this store's data sources can see."),
-        ui.kpi("Visits referred by AI", f"{k['ai_referred_visits']:,}", "from AI assistants",
-               spark=[r["ai_referred"] for r in daily], colour="#4a3aa7",
-               help="People who clicked through from an AI assistant's answer."),
-        ui.kpi("AI-influenced revenue", money(k["ai_influenced_revenue"]),
-               f"{k['ai_influenced_orders']} order{'' if k['ai_influenced_orders'] == 1 else 's'} · "
-               f"{k['ai_channel_orders']} inside AI apps", tone="up",
-               spark=pd.Series([r["ai_influenced_revenue"] or 0 for r in daily]).rolling(7, 1).mean(),
+        ui.kpi("Revenue from AI", money(ao.get("ai_revenue", k["ai_influenced_revenue"])),
+               f"{pct(ao.get('ai_revenue_share'))} of revenue · {ao.get('ai_orders', k['ai_influenced_orders'])} orders",
                colour="#0ca30c",
-               help="Orders placed by an agent, or by a person an AI assistant referred."),
-        ui.kpi("Orders flagged", f"{k['flagged_orders']}", "need review",
-               tone="down" if k["flagged_orders"] else "neutral"),
+               help="Orders placed by an agent, inside an AI app, or by a person an AI assistant referred. "
+                    "Test orders excluded."),
+        ui.kpi("Agent orders", f"{ao.get('agent_orders', 0):,}",
+               money(ao.get("agent_revenue")) + " placed or assisted by agents",
+               colour=charts.CLASS_COLOURS["automation"],
+               help="Orders where an agent built the cart: agent-placed, agent-assisted, or inside an AI app."),
+        ui.kpi("Agent conversion", pct(ac, 2),
+               f"people convert at {pct(hc, 2)}" if hc is not None else None,
+               help="Browser-based agent sessions that ended in an order, beside the rate for people."),
+        ui.kpi("Needs review", f"{review}", "orders to check before fulfilling",
+               tone="alert" if review else "neutral"),
     ])
     st.write("")
 
-    left, right = st.columns([2, 1], gap="medium")
+    # 2. What needs attention, then the one main chart.
+    left, right = st.columns([1, 2], gap="medium")
     with left, st.container(border=True):
+        ui.card_title("Needs attention", "Most urgent first.")
+        ui.attention_list(ao.get("attention") or [])
+    with right, st.container(border=True):
         units = {r.get("crawler_units") for r in daily}
         since = d.get("edge_since")
         if units == {"requests"}:
             note = " Crawler and scraper bars are requests (Cloudflare analytics); the rest are sessions."
         elif "requests" in units and since:
-            note = (f" Crawler and scraper bars are Cloudflare request counts up to "
-                    f"{pd.Timestamp(since):%d %b} (before the edge Worker started), sessions after.")
+            note = (f" Crawlers and scrapers are Cloudflare request counts up to "
+                    f"{pd.Timestamp(since):%d %b}, sessions after.")
         else:
-            note = " Sessions."
-        ui.card_title("Agent traffic", "Per day by class. People excluded so the mix is visible." + note)
+            note = ""
+        ui.card_title("Agent traffic", f"Sessions per day by class, last {days} days. People left out so "
+                      "the mix is visible." + note)
         plot(charts.agent_traffic(daily, shown))
-    with right, st.container(border=True):
-        ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
-        colour = {"high": "#d03b3b", "medium": "#eb6834", "info": "#2a78d6"}
-        items = [
-            {"ts": pd.Timestamp(a["ts"]), "colour": colour.get(a["severity"], "#c3c2b7"),
-             "text": ui.esc(a["text"]), "meta": a["detail"]}
-            for a in d["activity"][:6]
-        ]
-        ui.feed(items, pd.Timestamp(d["end"]))
 
-    left, right = st.columns([3, 2], gap="medium")
+    # 3. Where AI orders come from, and the latest ones.
+    left, right = st.columns([1, 2], gap="medium")
     with left, st.container(border=True):
-        ui.card_title("Visitor journey", "Share of each segment's visits reaching each step.")
-        plot(charts.funnel(d["funnel"]))
-        with st.expander("Counts"):
-            st.dataframe(pd.DataFrame([{
-                "Segment": f["label"], "Visits": f["visits"], "Viewed product": f["viewed_product"],
-                "Added to cart": f["added_to_cart"], "Started checkout": f["started_checkout"],
-                "Ordered": f["ordered"]} for f in d["funnel"]]),
-                hide_index=True, use_container_width=True)
+        ui.card_title("Where orders come from", "Revenue by origin, test orders excluded.")
+        bo = [b for b in ao.get("by_origin", []) if b["origin"] != "unmatched"]
+        if bo:
+            plot(charts.hbars([f"{b['label']}  ({b['orders']})" for b in bo], [b["revenue"] or 0 for b in bo],
+                              [charts.ORIGIN_COLOURS[b["origin"]] for b in bo], fmt=",.0f", prefix="$"))
+            if any(b["origin"] == "agent" for b in bo):
+                st.markdown('<div class="at-card-sub">"Agent order": the checkout pixel didn\'t record this '
+                            "checkout, so placed vs assisted is unknown.</div>", unsafe_allow_html=True)
     with right, st.container(border=True):
+        ui.card_title("Latest AI orders", "Open Orders for the full evidence behind each one.")
+        rec = ao.get("recent_ai_orders") or []
+        if rec:
+            st.dataframe(pd.DataFrame([{
+                "Placed": pd.Timestamp(x["created_at"]).tz_convert("Australia/Sydney").strftime("%d %b %H:%M"),
+                "Order": x["shopify_order_id"] or "", "Origin": x["origin_label"],
+                "Agent": x["agent"] or (x["ai_source"] and f"via {x['ai_source']}") or "",
+                "Identity": x["identity_label"] or "",
+                "Value": money(x["order_value"]) + (" (test)" if x["is_test"] else ""),
+                "Evidence": x["evidence_score"], "Review": "⚠" if x["needs_review"] else ""}
+                for x in rec]), hide_index=True, use_container_width=True)
+        else:
+            st.markdown('<div class="at-card-sub">No AI orders in this period.</div>', unsafe_allow_html=True)
+
+    # 4. Secondary: who the agents are, and the live feed.
+    left, right = st.columns([1, 1], gap="medium")
+    with left, st.container(border=True):
         ui.card_title("Who the agents are", "Sessions by agent this period.")
-        top = [t for t in d["top_agents"] if t["class"] in shown]
+        top = [t for t in d["top_agents"] if t["class"] in shown][:8]
         if top:
             plot(charts.hbars([t["name"] for t in top], [t["sessions"] for t in top],
                               [charts.CLASS_COLOURS[t["class"]] for t in top], fmt=",d"))
-        bots = d.get("edge_agents") or []
-        if bots:
-            ui.card_title("Bots and fetchers", "Requests per agent, Cloudflare analytics.")
-            plot(charts.hbars([b["name"] for b in bots[:8]], [b["requests"] for b in bots[:8]],
-                              [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots[:8]], fmt=",d"))
+    with right, st.container(border=True):
+        ui.card_title("Recent activity", "Notable agent behaviour, newest first.")
+        colour = {"high": "#d03b3b", "medium": "#eb6834", "info": "#2a78d6"}
+        ui.feed([{"ts": pd.Timestamp(a["ts"]), "colour": colour.get(a["severity"], "#c3c2b7"),
+                  "text": ui.esc(a["text"]), "meta": a["detail"]} for a in d["activity"][:6]],
+                pd.Timestamp(d["end"]))
+    st.markdown(f'<div class="at-card-sub" style="margin-top:8px">{k["sessions"]:,} sessions this period, '
+                f'{k["agent_sessions"]:,} from agents ({pct(k["agent_share"])}). Funnel and crawler detail are '
+                "under Agent sessions.</div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # AI referrals
@@ -294,8 +313,30 @@ elif page == "Agent sessions":
         st.markdown(f'<div class="at-card-sub">Showing {len(rows)} of {data["total"]:,}.</div>',
                     unsafe_allow_html=True)
 
+    ov = load("overview")
+    left, right = st.columns([3, 2], gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("Visitor journey", "Share of each segment's visits reaching each step.")
+        if ov.get("funnel"):
+            plot(charts.funnel(ov["funnel"]))
+            with st.expander("Counts"):
+                st.dataframe(pd.DataFrame([{
+                    "Segment": f["label"], "Visits": f["visits"], "Viewed product": f["viewed_product"],
+                    "Added to cart": f["added_to_cart"], "Started checkout": f["started_checkout"],
+                    "Ordered": f["ordered"]} for f in ov["funnel"]]),
+                    hide_index=True, use_container_width=True)
+    with right, st.container(border=True):
+        ui.card_title("Bots and fetchers", "Requests per agent, Cloudflare analytics.")
+        bots = ov.get("edge_agents") or []
+        if bots:
+            plot(charts.hbars([b["name"] for b in bots[:8]], [b["requests"] for b in bots[:8]],
+                              [charts.CLASS_COLOURS.get(b["class"], "#898781") for b in bots[:8]], fmt=",d"))
+        else:
+            st.markdown('<div class="at-card-sub">Connect Cloudflare under Connections to see these.</div>',
+                        unsafe_allow_html=True)
+
     if "crawler" in shown:
-        files = load("overview").get("agent_files") or []
+        files = ov.get("agent_files") or []
         if files:
             with st.container(border=True):
                 ui.card_title("What agents read", "Fetches of agent-facing files, from edge data. "
@@ -389,6 +430,55 @@ elif page == "Orders":
                tone="down" if k["flagged_orders"] else "neutral"),
     ])
     st.write("")
+    # Every order with its origin, then the evidence behind any one of them.
+    ol = load("orders_list", limit=300)
+    rows = ol.get("orders") or []
+    with st.container(border=True):
+        ui.card_title("All orders", "Origin, agent identity and how much evidence we hold. Agent-placed: "
+                      "an agent did everything. Agent-assisted: an agent built the order and a person paid.")
+        origins = ["All", "AI only", "Needs review"]
+        pick = st.radio("Filter", origins, index=1, horizontal=True, label_visibility="collapsed",
+                        key="order_filter")
+        view = [x for x in rows if pick == "All"
+                or (pick == "AI only" and x["origin"] not in ("human", "unmatched"))
+                or (pick == "Needs review" and x["needs_review"])]
+        st.dataframe(pd.DataFrame([{
+            "Placed": pd.Timestamp(x["created_at"]).tz_convert("Australia/Sydney").strftime("%d %b %H:%M"),
+            "Order": x["shopify_order_id"] or "", "Origin": x["origin_label"],
+            "Agent": x["agent"] or (x["ai_source"] and f"via {x['ai_source']}") or "",
+            "Identity": x["identity_label"] or "",
+            "Confidence": x["confidence"],
+            "Value": money(x["order_value"]) + (" (test)" if x["is_test"] else ""),
+            "Evidence": x["evidence_score"], "Review": "⚠" if x["needs_review"] else ""}
+            for x in view]), hide_index=True, use_container_width=True, height=300,
+            column_config={"Confidence": st.column_config.ProgressColumn(format="%.2f", min_value=0,
+                                                                           max_value=1)})
+        rank = {"agent_assisted": 0, "agent_placed": 0, "agent": 1, "ai_referred": 2, "ai_channel": 3}
+        ai_rows = sorted([x for x in rows if x["origin"] in rank], key=lambda x: rank[x["origin"]]) or rows
+        if ai_rows:
+            labels = {x["order_id"]: f"#{x['shopify_order_id'] or x['order_id'][:8]} · {x['origin_label']} · "
+                      f"{money(x['order_value'])} · "
+                      f"{pd.Timestamp(x['created_at']).tz_convert('Australia/Sydney'):%d %b %H:%M}"
+                      for x in ai_rows[:150]}
+            oid = st.selectbox("Order evidence", list(labels), format_func=labels.get)
+            det = load("order", order_id=oid)
+            if det:
+                ui.evidence_chain(det.get("chain") or [])
+                a, b = st.columns([3, 2], gap="large")
+                with a:
+                    sess = det.get("session") or {}
+                    reasons = sess.get("reasons") or []
+                    if reasons:
+                        st.markdown('<div class="at-card-sub"><b>Why the session was classed this way</b></div>'
+                                    + "".join(f'<div class="at-signal"><span>●</span><span>{ui.esc(x["text"])}'
+                                              "</span></div>" for x in reasons), unsafe_allow_html=True)
+                with b:
+                    steps = det.get("checkout_steps") or []
+                    if steps:
+                        ui.kv_list({s["step"].replace("checkout_", "").replace("_", " "): f"+{s['seconds']:.0f}s"
+                                    for s in steps})
+    st.write("")
+
     segs = [s for s in d["by_segment"] if s["orders"]]
     left, right = st.columns(2, gap="medium")
     with left, st.container(border=True):

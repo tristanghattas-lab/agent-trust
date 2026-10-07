@@ -6,6 +6,8 @@ Metrics endpoints: one per view, scoped to a store.
     GET /metrics/sessions?shop=...&days=...&class=automation&limit=50&offset=0
     GET /metrics/sessions/{session_key}?shop=...
     GET /metrics/orders?shop=...&days=...
+    GET /metrics/orders/list?shop=...&days=...        (origin + evidence per order)
+    GET /metrics/orders/{order_id}?shop=...           (one order's evidence chain)
     GET /metrics/threats?shop=...
 
 shop=demo serves the synthetic dataset, so a front end can be built before a
@@ -99,6 +101,22 @@ def get_session(session_key: str, shop: str = Depends(resolve_shop), days: int =
 @router.get("/orders", dependencies=deps)
 def get_orders(shop: str = Depends(resolve_shop), days: int = Days):
     return metrics.orders_summary(metrics.load_frames(engine, shop, days))
+
+
+@router.get("/orders/list", dependencies=deps)
+def get_orders_list(shop: str = Depends(resolve_shop), days: int = Days, limit: int = Query(200, ge=1, le=1000)):
+    """Every order with its origin (agent-placed, agent-assisted, AI-referred...),
+    agent identity tier and evidence score."""
+    return metrics.orders_list(metrics.load_frames(engine, shop, days), limit)
+
+
+@router.get("/orders/{order_id}", dependencies=deps)
+def get_order(order_id: str, shop: str = Depends(resolve_shop), days: int = Query(365, ge=1, le=365)):
+    """One order's evidence chain: origin, session, identity, checkout, order."""
+    detail = metrics.order_detail(metrics.load_frames(engine, shop, days), order_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="order not found for this shop")
+    return detail
 
 
 @router.get("/report", dependencies=deps)

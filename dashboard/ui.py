@@ -80,7 +80,7 @@ CSS = """
                  line-height:1.15;}
   .at-kpi-delta {font-size:0.78rem; margin-top:3px; color:#898781;
                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .at-kpi-delta.up {color:#006300;} .at-kpi-delta.down {color:#b42b2b;}
+  .at-kpi-delta.up {color:#006300;} .at-kpi-delta.down, .at-kpi-delta.alert {color:#b42b2b;}
   .at-kpi svg {display:block; margin-top:6px;}
 
   /* --- activity feed --- */
@@ -114,6 +114,27 @@ CSS = """
                 font-size:0.78rem; border:1px solid rgba(11,11,11,0.10); background:#fcfcfb; color:#0b0b0b;}
   .at-cov-chip.off {color:#898781; background:transparent; border-style:dashed;}
   .at-cov-note {font-size:0.78rem; color:#52514e;}
+
+  /* --- needs attention --- */
+  .at-att {display:flex; gap:12px; align-items:flex-start; padding:10px 0; border-bottom:1px solid #efeee9;}
+  .at-att:last-child {border-bottom:none;}
+  .at-att-bar {width:3px; align-self:stretch; border-radius:2px; flex:none;}
+  .at-att-title {font-size:0.9rem; font-weight:600; color:#0b0b0b; line-height:1.35;}
+  .at-att-detail {font-size:0.8rem; color:#52514e; margin-top:2px;}
+  .at-att-go {margin-left:auto; font-size:0.75rem; color:#898781; white-space:nowrap; padding-top:2px;}
+  .at-ok {font-size:0.88rem; color:#0b4d0b; padding:6px 0;}
+
+  /* --- evidence chain --- */
+  .at-chain {display:flex; gap:0; flex-wrap:wrap; margin:6px 0 4px;}
+  .at-link {flex:1 1 150px; padding:10px 12px; border:1px solid rgba(11,11,11,0.08); background:#fff;
+            margin:0 -1px -1px 0;}
+  .at-link:first-child {border-radius:10px 0 0 10px;} .at-link:last-child {border-radius:0 10px 10px 0;}
+  .at-link-step {font-size:0.72rem; font-weight:650; letter-spacing:0.05em; text-transform:uppercase;}
+  .at-link-step.ok {color:#0b6b0b;} .at-link-step.miss {color:#a1793a;}
+  .at-link-text {font-size:0.83rem; color:#0b0b0b; margin-top:4px; line-height:1.35;}
+
+  /* --- tabular numbers everywhere --- */
+  .at-kpi-value, .at-kv span:last-child, div[data-testid="stDataFrame"] {font-variant-numeric: tabular-nums;}
 
   /* --- widgets --- */
   div[data-testid="stDataFrame"] {border-radius:10px; overflow:hidden;}
@@ -258,3 +279,28 @@ def kv_list(pairs: dict[str, str]) -> None:
                 for k, v in pairs.items()),
         unsafe_allow_html=True,
     )
+
+
+SEVERITY_BAR = {"high": "#d03b3b", "medium": "#eb6834", "info": "#86b6ef"}
+
+
+def attention_list(items: list[dict]) -> None:
+    """items: {severity, title, detail, page}. Most urgent first."""
+    if not items:
+        st.markdown('<div class="at-ok">● Nothing needs you right now.</div>', unsafe_allow_html=True)
+        return
+    st.markdown("".join(
+        f'<div class="at-att"><span class="at-att-bar" style="background:{SEVERITY_BAR.get(i["severity"], "#c3c2b7")}">'
+        f'</span><div><div class="at-att-title">{esc(i["title"])}</div>'
+        f'<div class="at-att-detail">{esc(i["detail"])}</div></div>'
+        f'<span class="at-att-go">{esc(i.get("page") or "")} →</span></div>'
+        for i in items), unsafe_allow_html=True)
+
+
+def evidence_chain(chain: list[dict]) -> None:
+    """One order's evidence, left to right: each link present or missing."""
+    st.markdown('<div class="at-chain">' + "".join(
+        f'<div class="at-link"><div class="at-link-step {"ok" if c["ok"] else "miss"}">'
+        f'{"✓" if c["ok"] else "○"} {esc(c["step"])}</div>'
+        f'<div class="at-link-text">{esc(c["text"])}</div></div>'
+        for c in chain) + "</div>", unsafe_allow_html=True)

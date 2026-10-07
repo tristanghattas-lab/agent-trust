@@ -43,6 +43,12 @@ SEGMENT_COLOURS = {
 }
 CLASS_COLOURS["ai_channel"] = SEGMENT_COLOURS["ai_channel"]
 CLASS_LABELS["ai_channel"] = "AI channel (agentic checkout)"
+# Order origins: agent shades share the automation hue (assisted lighter),
+# so "agent" reads as one family everywhere.
+ORIGIN_COLOURS = {
+    "agent_placed": "#eb6834", "agent_assisted": "#f4ae8a", "agent": "#eb6834",
+    "ai_channel": "#1baf7a", "ai_referred": "#4a3aa7", "human": "#c3c2b7", "unmatched": "#e4e3dd",
+}
 SOURCE_COLOURS = {
     "ChatGPT": "#2a78d6", "Perplexity": "#eb6834", "Gemini": "#1baf7a",
     "Copilot": "#eda100", "Claude": "#e87ba4",
