@@ -692,7 +692,8 @@ elif page == "Run report":
             st.caption(f"{c['occurred_at'][11:19]} UTC · {c['topic']} · …{c['token'] or '—'} · "
                        f"{c['items']} items · {money(c['total'])} · "
                        + (f"{'; '.join(c['lines'])} · " if c.get("lines") else "")
-                       + ("storefront session " + (c['session_key'] or '(linked cart)') if c["storefront_session"]
+                       + ("storefront session " + (c.get('linked_session') or c['session_key'] or '(linked cart)')
+                          if c["storefront_session"]
                           else "**no storefront session**"))
     if rep.get("webhook_deliveries"):
         st.markdown("**Webhook deliveries**")

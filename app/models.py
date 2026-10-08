@@ -275,7 +275,7 @@ class JourneyEvent(Base):
     shop_domain: Mapped[str] = mapped_column(String, index=True)
     session_key: Mapped[str] = mapped_column(String, index=True)
     seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    kind: Mapped[str] = mapped_column(String)   # page | search | cart_add | cart_change | dead_end | leave
+    kind: Mapped[str] = mapped_column(String)   # page | search | cart_add | cart_change | dead_end | leave | cart_link
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_type: Mapped[str | None] = mapped_column(String, nullable=True)
     product: Mapped[str | None] = mapped_column(String, nullable=True)   # product handle
@@ -288,6 +288,7 @@ class JourneyEvent(Base):
     dwell_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scroll_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     hidden_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cart_token: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 

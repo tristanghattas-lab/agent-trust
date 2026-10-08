@@ -138,6 +138,8 @@ def _migrate_new_columns() -> None:
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_evidence TEXT",
         "ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_test BOOLEAN DEFAULT FALSE",
         "ALTER TABLE commerce_events ADD COLUMN IF NOT EXISTS items TEXT",
+        "ALTER TABLE journey_events ADD COLUMN IF NOT EXISTS cart_token VARCHAR",
+        "CREATE INDEX IF NOT EXISTS ix_journey_events_cart_token ON journey_events (cart_token)",
     ]
     with engine.begin() as conn:
         for stmt in statements:

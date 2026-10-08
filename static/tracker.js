@@ -275,6 +275,19 @@
   // Same-origin relative to the storefront page, so no CORS setup needed.
   // Silently a no-op on any site that isn't Shopify (the fetch 404s and is
   // ignored) — tracker.js is also used on non-Shopify site types.
+  // The cart's token, sent once per session per cart, so Shopify's cart and
+  // checkout webhooks (which don't carry cart attributes) join to this
+  // session. The token is a random cart id, not personal data.
+  function linkCart(cart) {
+    if (!cart || !cart.token || typeof journeyEvent !== "function") return;
+    var tok = String(cart.token).split("?")[0].slice(0, 100);
+    try {
+      if (localStorage.getItem("_at_cart") === sessionKey + ":" + tok) return;
+      localStorage.setItem("_at_cart", sessionKey + ":" + tok);
+    } catch (e) {}
+    journeyEvent("cart_link", { cart_token: tok });
+  }
+
   function syncShopifyCartAttribute() {
     if (!window.Shopify || !originalFetch) return;
     try {
@@ -285,9 +298,14 @@
           attributes: { agent_trust_session: sessionKey },
         }),
         keepalive: true,
-      }).catch(function () {
-        /* no cart yet, or not actually Shopify — ignore either way */
-      });
+      })
+        .then(function (r) {
+          return r.ok ? r.json() : null;
+        })
+        .then(linkCart)
+        .catch(function () {
+          /* no cart yet, or not actually Shopify — ignore either way */
+        });
     } catch (e) {
       /* never let tracking break the page */
     }
@@ -529,6 +547,7 @@
 
   function recordCartResponse(kind, data) {
     if (!data) return;
+    if (data.token) linkCart(data);
     if (kind === "add") {
       var items = data.items && data.items.length ? data.items : data.variant_id ? [data] : [];
       for (var i = 0; i < items.length && i < 10; i++) {

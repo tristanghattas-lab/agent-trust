@@ -39,7 +39,7 @@ PIXEL_EVENTS = {
 MAX_PIXEL_BYTES = 4096
 MAX_JOURNEY_BYTES = 32768
 MAX_JOURNEY_EVENTS = 60
-JOURNEY_KINDS = {"page", "search", "cart_add", "cart_change", "dead_end", "leave"}
+JOURNEY_KINDS = {"page", "search", "cart_add", "cart_change", "dead_end", "leave", "cart_link"}
 
 
 def log_webhook(db: DBSession, shop: str | None, topic: str | None, outcome: str, detail: str | None = None) -> None:
@@ -120,7 +120,7 @@ def event_from_webhook(shop: str, topic: str, payload: dict, webhook_id: str | N
     return CommerceEvent(
         shop_domain=shop, source="webhook", topic=topic, webhook_id=webhook_id,
         token=str(payload.get("token") or payload.get("id") or "")[:100] or None,
-        cart_token=str(payload.get("token") if is_cart else payload.get("cart_token") or "")[:100] or None,
+        cart_token=str(payload.get("token") if is_cart else payload.get("cart_token") or "").split("?")[0][:100] or None,
         session_key=_session_key(payload),
         order_id=str(payload["order_id"]) if payload.get("order_id") else None,
         total=total,
@@ -241,6 +241,7 @@ async def journey(request: Request, db: DBSession = Depends(get_db)):
             price=_float(e.get("price")), query=_clean_query(e.get("query")),
             detail=_s(e.get("detail"), 60), dwell_ms=_int(e.get("dwell_ms"), 0, 86_400_000),
             scroll_pct=_int(e.get("scroll_pct"), 0, 100), hidden_ms=_int(e.get("hidden_ms"), 0, 86_400_000),
+            cart_token=(_s(e.get("cart_token"), 100) or "").split("?")[0] or None,
             occurred_at=when,
         ))
         n += 1

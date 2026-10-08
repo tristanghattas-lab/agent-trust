@@ -761,16 +761,20 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
                                        for r in mine.itertuples()]
         w = ev[(ev["occurred_at"] >= since) & (ev["occurred_at"] <= until) & (ev["source"] == "webhook")]
         carts_with_session = set(ev.loc[ev["session_key"].notna() & ev["cart_token"].notna(), "cart_token"])
+        linked = _cart_sessions(f)
+        carts_with_session |= set(linked)
+        filled = set(ev.loc[(ev["source"] == "webhook") & (ev["item_count"].fillna(0) > 0), "cart_token"].dropna())
         for r in w.sort_values("occurred_at").itertuples():
             storefront = bool(r.session_key) or (r.cart_token in carts_with_session)
             commerce.append({"topic": r.topic, "occurred_at": _iso(r.occurred_at),
                              "token": (r.token or "")[-8:] or None, "session_key": r.session_key,
                              "storefront_session": storefront, "total": _num(r.total, 2),
+                             "linked_session": r.session_key if isinstance(r.session_key, str) else linked.get(r.cart_token),
                              "items": None if pd.isna(r.item_count) else int(r.item_count),
                              "lines": [f"{i.get('quantity', 1)} × {i.get('title') or i.get('variant_id')}"
                                        for i in _json_items(getattr(r, "items", None))][:10],
                              "source_name": r.source_name})
-            if r.topic == "carts/create" and not storefront:
+            if r.topic == "carts/create" and not storefront and r.cart_token in filled:
                 off_site += 1
     deliveries = []
     hk = f.hooks
@@ -1069,6 +1073,15 @@ def order_detail(f: Frames, order_id: str) -> dict | None:
     return None
 
 
+def _cart_sessions(f: Frames) -> dict[str, str]:
+    """Cart token -> tracker session, from the tracker's cart_link steps."""
+    j = f.journey
+    if j is None or j.empty or "cart_token" not in j:
+        return {}
+    links = j[j["cart_token"].notna()].sort_values("occurred_at")
+    return dict(zip(links["cart_token"], links["session_key"]))
+
+
 def _offsite_carts(f: Frames) -> tuple[int, int]:
     """Carts created with no storefront session (Shopify's agent API, or
     carts the tracker didn't see), and how many of those reached an order."""
@@ -1076,8 +1089,13 @@ def _offsite_carts(f: Frames) -> tuple[int, int]:
     if ev is None or ev.empty or "source" not in ev:
         return 0, 0
     with_session = set(ev.loc[ev["session_key"].notna() & ev["cart_token"].notna(), "cart_token"])
+    with_session |= set(_cart_sessions(f))
+    # A cart only counts once it has items: the tracker's own cart tagging
+    # creates an empty cart on every visit.
+    filled = set(ev.loc[(ev["source"] == "webhook") & (ev["item_count"].fillna(0) > 0), "cart_token"].dropna())
     carts = ev[(ev["source"] == "webhook") & (ev["topic"] == "carts/create")]
-    off = carts[carts["session_key"].isna() & ~carts["cart_token"].isin(with_session)]
+    off = carts[carts["session_key"].isna() & ~carts["cart_token"].isin(with_session)
+                & carts["cart_token"].isin(filled)]
     ordered = ev.loc[ev["order_id"].notna(), "cart_token"] if "order_id" in ev else pd.Series(dtype=str)
     return int(len(off)), int(off["cart_token"].isin(set(ordered.dropna())).sum())
 
@@ -1212,6 +1230,8 @@ def _step_text(e) -> str:
         return f"Hit a missing page (404): {e.get('path')}"
     if kind == "leave":
         dwell = (_v(e.get("dwell_ms")) or 0) / 1000
+        if _v(e.get("page_type")) == "404":
+            name = "the missing page"
         txt = f"Left {name or _v(e.get('path')) or 'the page'} after {dwell:.0f}s, scrolled {int(_v(e.get('scroll_pct')) or 0)}%"
         hid = (_v(e.get("hidden_ms")) or 0) / 1000
         return txt + (f", tab hidden for {hid:.0f}s" if hid >= 1 else "")
@@ -1223,7 +1243,7 @@ def journey_steps(f: Frames, session_key: str | None) -> list[dict]:
     j = f.journey
     if j is None or j.empty or not session_key:
         return []
-    mine = j[j["session_key"] == session_key]
+    mine = j[(j["session_key"] == session_key) & (j["kind"] != "cart_link")]
     if mine.empty:
         return []
     mine = mine.assign(_seq=mine["seq"].fillna(0)).sort_values(["occurred_at", "_seq"])
