@@ -8,6 +8,7 @@ Metrics endpoints: one per view, scoped to a store.
     GET /metrics/orders?shop=...&days=...
     GET /metrics/orders/list?shop=...&days=...        (origin + evidence per order)
     GET /metrics/orders/{order_id}?shop=...           (one order's evidence chain)
+    GET /metrics/products?shop=...&days=...           (products and agent behaviour)
     GET /metrics/threats?shop=...
 
 shop=demo serves the synthetic dataset, so a front end can be built before a
@@ -117,6 +118,13 @@ def get_order(order_id: str, shop: str = Depends(resolve_shop), days: int = Quer
     if detail is None:
         raise HTTPException(status_code=404, detail="order not found for this shop")
     return detail
+
+
+@router.get("/products", dependencies=deps)
+def get_products(shop: str = Depends(resolve_shop), days: int = Days):
+    """Per-product views, adds and out-of-stock hits by agents vs people,
+    and how agents move through the store (from the tracker's journey)."""
+    return metrics.products(metrics.load_frames(engine, shop, days))
 
 
 @router.get("/report", dependencies=deps)

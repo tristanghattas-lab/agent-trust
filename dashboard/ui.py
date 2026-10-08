@@ -136,6 +136,15 @@ CSS = """
   /* --- tabular numbers everywhere --- */
   .at-kpi-value, .at-kv span:last-child, div[data-testid="stDataFrame"] {font-variant-numeric: tabular-nums;}
 
+  /* --- journey timeline --- */
+  .at-tl {display:flex; gap:10px; align-items:flex-start; padding:5px 0; border-bottom:1px solid #f2f1ed;}
+  .at-tl:last-child {border-bottom:none;}
+  .at-tl-t {width:52px; flex:none; text-align:right; color:#898781; font-size:0.78rem;
+            font-variant-numeric: tabular-nums; padding-top:1px;}
+  .at-tl .at-feed-dot {margin-top:5px;}
+  .at-tl-text {font-size:0.86rem; color:#0b0b0b; line-height:1.35;}
+  .at-tl-text.muted {color:#898781;}
+
   /* --- widgets --- */
   div[data-testid="stDataFrame"] {border-radius:10px; overflow:hidden;}
   div[data-testid="stExpander"] details {border-radius:10px; background:#fcfcfb;}
@@ -304,3 +313,38 @@ def evidence_chain(chain: list[dict]) -> None:
         f'{"✓" if c["ok"] else "○"} {esc(c["step"])}</div>'
         f'<div class="at-link-text">{esc(c["text"])}</div></div>'
         for c in chain) + "</div>", unsafe_allow_html=True)
+
+
+JOURNEY_COLOURS = {"page": "#86b6ef", "search": "#4a3aa7", "cart_add": "#0ca30c", "cart_change": "#0ca30c",
+                   "dead_end": "#d03b3b", "leave": "#c3c2b7"}
+
+
+def timeline(steps: list[dict], limit: int = 40) -> None:
+    """A visit, step by step, with seconds since the first step."""
+    if not steps:
+        st.markdown('<div class="at-card-sub">No page-by-page steps recorded for this session.</div>',
+                    unsafe_allow_html=True)
+        return
+    rows = "".join(
+        f'<div class="at-tl"><span class="at-tl-t">+{s["t"]:.0f}s</span>'
+        f'<span class="at-feed-dot" style="background:{JOURNEY_COLOURS.get(s["kind"], "#c3c2b7")}"></span>'
+        f'<span class="at-tl-text{" muted" if s["kind"] == "leave" else ""}">{esc(s["text"])}</span></div>'
+        for s in steps[:limit])
+    more = (f'<div class="at-card-sub">…and {len(steps) - limit} more steps.</div>' if len(steps) > limit else "")
+    st.markdown(rows + more, unsafe_allow_html=True)
+
+
+def journey_facts(summary: dict | None) -> str:
+    if not summary:
+        return ""
+    bits = [f"{summary['steps']} steps over {summary['duration_seconds']:.0f}s",
+            f"{summary['products_viewed']} product{'s' if summary['products_viewed'] != 1 else ''} viewed"]
+    if summary.get("searches"):
+        bits.append("searched " + ", ".join(f'"{q}"' for q in summary["searches"][:3]))
+    if summary.get("adds_to_cart"):
+        bits.append(f"{summary['adds_to_cart']} added to cart")
+    if summary.get("dead_ends"):
+        bits.append(f"{summary['dead_ends']} dead end{'s' if summary['dead_ends'] != 1 else ''}")
+    if summary.get("median_seconds_between_steps") is not None:
+        bits.append(f"median {summary['median_seconds_between_steps']:.0f}s between steps")
+    return " · ".join(bits)

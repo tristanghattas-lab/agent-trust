@@ -102,6 +102,8 @@ class Frames:
     events: pd.DataFrame = field(default_factory=pd.DataFrame)
     # Webhook delivery outcomes (setup diagnostics).
     hooks: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Page-by-page visit steps from the tracker (journey_events).
+    journey: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @lru_cache(maxsize=2)
@@ -142,6 +144,65 @@ def _demo_pixel(s: pd.DataFrame, o: pd.DataFrame) -> pd.DataFrame:
     return ev
 
 
+def _demo_journey(s: pd.DataFrame, max_sessions: int = 600) -> pd.DataFrame:
+    """Synthetic visit steps for the demo store. Agents: short steady gaps,
+    little scrolling, often a hidden tab, more searching. People: longer and
+    uneven gaps, deeper scrolling. Modelled on the real test runs."""
+    import numpy as np
+
+    if s.empty:
+        return pd.DataFrame()
+    rng = np.random.default_rng(11)
+    paths = s["landing_path"].dropna()
+    handles = sorted({p.split("/products/")[1].split("?")[0] for p in paths if "/products/" in p}) or ["product"]
+    ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
+    hu = s[s["traffic_class"] == HUMAN]
+    half = max_sessions // 2
+    # Agents that ordered or carted first, so the sessions the dashboard leads with have a journey.
+    ag = ag.assign(_r=ag["st_ordered"].astype(int) * 2 + ag["st_cart"].astype(int)).sort_values("_r", ascending=False)
+    pick = pd.concat([ag.head(half), hu.sample(min(half, len(hu)), random_state=3)])
+    queries = ["gift under $100", "best seller", "shiraz", "free shipping", "vegan", "travel size"]
+    rows = []
+    for r in pick.itertuples():
+        agent = r.traffic_class != HUMAN
+        t = r.first_seen
+        seq = 0
+
+        def add(kind, **kw):
+            nonlocal seq
+            seq += 1
+            rows.append({"session_key": r.session_key, "seq": seq, "kind": kind, "occurred_at": t, **kw})
+
+        n_products = int(rng.integers(1, 5 if agent else 4))
+        if rng.random() < (0.55 if agent else 0.2):
+            add("search", query=str(rng.choice(queries)), page_type="searchresults", path="/search")
+            t += timedelta(seconds=float(rng.uniform(1.5, 4) if agent else rng.uniform(5, 30)))
+        for _ in range(n_products):
+            h = str(rng.choice(handles))
+            title = h.replace("-", " ").title()
+            add("page", page_type="product", product=h, title=title, path=f"/products/{h}")
+            if rng.random() < 0.06:
+                add("dead_end", page_type="product", product=h, title=title, detail="out_of_stock",
+                    path=f"/products/{h}")
+            dwell = float(rng.uniform(2, 6) if agent else rng.uniform(12, 90))
+            if bool(r.st_cart) and _ == n_products - 1:
+                t += timedelta(seconds=dwell * 0.7)
+                dwell *= 0.3
+                add("cart_add", product=h, title=title, quantity=int(rng.integers(1, 3)),
+                    price=float(round(rng.uniform(20, 180), 2)), path=f"/products/{h}")
+            t += timedelta(seconds=dwell)
+            add("leave", page_type="product", product=h, path=f"/products/{h}", dwell_ms=int(dwell * 1000),
+                scroll_pct=int(rng.uniform(0, 35) if agent else rng.uniform(40, 100)),
+                hidden_ms=int(dwell * 1000 * rng.uniform(0.5, 1)) if agent and rng.random() < 0.4 else 0)
+            t += timedelta(seconds=float(rng.uniform(0.5, 2) if agent else rng.uniform(1, 8)))
+    j = pd.DataFrame(rows)
+    for col in ("title", "product", "query", "detail", "price", "quantity", "dwell_ms", "scroll_pct",
+                "hidden_ms", "page_type", "path", "variant_id"):
+        if col not in j:
+            j[col] = None
+    return j
+
+
 def load_frames(engine: Engine, shop: str, days: int) -> Frames:
     if shop == DEMO_SHOP:
         s, o, _, r = _demo_frames(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
@@ -150,7 +211,8 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
         s = s[s["first_seen"] > start]
         o = o[o["created_at"] > start] if not o.empty else o
         coverage = {"tracker": True, "orders": True, "edge": True, "pixel": True, "simulated": True}
-        return Frames(shop, "demo", s, o, r, start, end, days, coverage, events=_demo_pixel(s, o))
+        return Frames(shop, "demo", s, o, r, start, end, days, coverage, events=_demo_pixel(s, o),
+                      journey=_demo_journey(s))
 
     end = pd.Timestamp.now(tz="UTC")
     start = end - timedelta(days=days)
@@ -176,13 +238,17 @@ def load_frames(engine: Engine, shop: str, days: int) -> Frames:
         hooks = (q("SELECT topic, outcome, detail, received_at FROM webhook_log "
                    "WHERE (shop_domain = :shop OR shop_domain IS NULL) AND received_at > :start")
                  if _has_table(conn, "webhook_log") else pd.DataFrame())
+        journey = (q("SELECT * FROM journey_events WHERE shop_domain = :shop AND occurred_at > :start")
+                   if _has_table(conn, "journey_events") else pd.DataFrame())
         coverage = _live_coverage(conn, shop)
     s, o, _, r = enrich_frames(sessions, orders, outcomes, runs)
+    if not journey.empty:
+        journey["occurred_at"] = pd.to_datetime(journey["occurred_at"], utc=True)
     if not events.empty:
         events["occurred_at"] = pd.to_datetime(events["occurred_at"], utc=True)
     if not hooks.empty:
         hooks["received_at"] = pd.to_datetime(hooks["received_at"], utc=True)
-    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg), events, hooks)
+    return Frames(shop, "live", s, o, r, start, end, days, coverage, _enrich_agg(agg), events, hooks, journey)
 
 
 def _enrich_agg(agg: pd.DataFrame) -> pd.DataFrame:
@@ -644,6 +710,8 @@ def session_detail(f: Frames, session_key: str) -> dict | None:
             "checkout_seconds": _num(r.time_to_checkout_seconds, 1),
         },
     )
+    steps = journey_steps(f, session_key)
+    out.update(journey=steps, journey_summary=journey_summary(steps))
     return out
 
 
@@ -667,7 +735,7 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
             sessions.append({k: d.get(k) for k in (
                 "session_key", "first_seen", "class_label", "agent", "confidence", "landing_path",
                 "referrer", "ai_source", "user_agent", "js_executed", "cart_value", "ordered",
-                "behaviour_only", "reasons", "signals_detail", "edge_requests")}
+                "behaviour_only", "reasons", "signals_detail", "edge_requests", "journey", "journey_summary")}
                 | {"last_seen": _iso(getattr(r, "last_seen", None))})
     orders = []
     if not o.empty:
@@ -699,6 +767,8 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
                              "token": (r.token or "")[-8:] or None, "session_key": r.session_key,
                              "storefront_session": storefront, "total": _num(r.total, 2),
                              "items": None if pd.isna(r.item_count) else int(r.item_count),
+                             "lines": [f"{i.get('quantity', 1)} × {i.get('title') or i.get('variant_id')}"
+                                       for i in _json_items(getattr(r, "items", None))][:10],
                              "source_name": r.source_name})
             if r.topic == "carts/create" and not storefront:
                 off_site += 1
@@ -987,6 +1057,9 @@ def order_detail(f: Frames, order_id: str) -> dict | None:
                 sd = session_detail(f, x["session_key"]) or {}
                 out["session"] = {k: sd.get(k) for k in (
                     "first_seen", "landing_path", "referrer", "reasons", "signals_detail", "edge_requests")}
+                out["journey"] = journey_steps(f, x["session_key"])
+                out["journey_summary"] = journey_summary(out["journey"])
+            out["items"] = order_items(f, x["shopify_order_id"], x["session_key"])
             steps = _pixel_by_session(f).get(x["session_key"]) or []
             if steps:
                 t0 = steps[0][1]
@@ -1105,6 +1178,160 @@ def ai_orders_block(f: Frames) -> dict:
         "recent_ai_orders": [x for x in rows if x["origin"] in AI_ORIGINS][:8],
         "attention": attention(f, rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Journeys and products
+# ---------------------------------------------------------------------------
+def _v(x):
+    return None if x is None or (isinstance(x, float) and pd.isna(x)) else x
+
+
+def _step_text(e) -> str:
+    name = _v(e.get("title")) or _v(e.get("product"))
+    kind = e.get("kind")
+    if kind == "page":
+        if name:
+            return f"Viewed {name}"
+        pt = _v(e.get("page_type")) or "page"
+        return {"home": "Opened the home page", "collection": f"Browsed collection {e.get('path') or ''}",
+                "cart": "Opened the cart", "searchresults": "Opened search results"}.get(pt, f"Opened {e.get('path') or pt}")
+    if kind == "search":
+        return f'Searched "{_v(e.get("query")) or ""}"'
+    if kind == "cart_add":
+        qty = int(_v(e.get("quantity")) or 1)
+        price = _v(e.get("price"))
+        return f"Added {qty} × {name or 'an item'}" + (f" (${price:,.2f})" if price else "")
+    if kind == "cart_change":
+        total, n = _v(e.get("price")), _v(e.get("quantity"))
+        return (f"Updated the cart ({_v(e.get('detail')) or 'change'})"
+                + (f": {int(n)} items" if n is not None else "") + (f", ${total:,.2f}" if total is not None else ""))
+    if kind == "dead_end":
+        if _v(e.get("detail")) == "out_of_stock":
+            return f"Hit an out-of-stock product: {name or e.get('path')}"
+        return f"Hit a missing page (404): {e.get('path')}"
+    if kind == "leave":
+        dwell = (_v(e.get("dwell_ms")) or 0) / 1000
+        txt = f"Left {name or _v(e.get('path')) or 'the page'} after {dwell:.0f}s, scrolled {int(_v(e.get('scroll_pct')) or 0)}%"
+        hid = (_v(e.get("hidden_ms")) or 0) / 1000
+        return txt + (f", tab hidden for {hid:.0f}s" if hid >= 1 else "")
+    return kind or "step"
+
+
+def journey_steps(f: Frames, session_key: str | None) -> list[dict]:
+    """A session's steps in order, with seconds since the first step."""
+    j = f.journey
+    if j is None or j.empty or not session_key:
+        return []
+    mine = j[j["session_key"] == session_key]
+    if mine.empty:
+        return []
+    mine = mine.assign(_seq=mine["seq"].fillna(0)).sort_values(["occurred_at", "_seq"])
+    # Leave events carry the product handle only: reuse the title seen earlier.
+    titles = mine.dropna(subset=["product", "title"]).groupby("product")["title"].last()
+    mine = mine.assign(title=mine["title"].where(mine["title"].notna(), mine["product"].map(titles)))
+    t0 = mine["occurred_at"].iloc[0]
+    return [{"t": round((r["occurred_at"] - t0).total_seconds(), 1), "at": _iso(r["occurred_at"]),
+             "kind": r["kind"], "text": _step_text(r), "product": _v(r.get("product")),
+             "path": _v(r.get("path"))}
+            for r in mine.to_dict("records")]
+
+
+def journey_summary(steps: list[dict]) -> dict | None:
+    if not steps:
+        return None
+    acts = [x for x in steps if x["kind"] != "leave"]
+    gaps = [b["t"] - a["t"] for a, b in zip(acts, acts[1:])]
+    gaps = sorted(g for g in gaps if g >= 0)
+    return {
+        "steps": len(acts),
+        "pages": sum(x["kind"] == "page" for x in steps),
+        "products_viewed": len({x["product"] for x in steps if x["kind"] == "page" and x["product"]}),
+        "searches": [x["text"][9:].strip('"') for x in steps if x["kind"] == "search"],
+        "adds_to_cart": sum(x["kind"] == "cart_add" for x in steps),
+        "dead_ends": sum(x["kind"] == "dead_end" for x in steps),
+        "duration_seconds": steps[-1]["t"],
+        "median_seconds_between_steps": round(gaps[len(gaps) // 2], 1) if gaps else None,
+    }
+
+
+def order_items(f: Frames, shopify_order_id: str | None, session_key: str | None) -> list[dict]:
+    """Line items for an order: the completed checkout's items if we have
+    them, otherwise the session's last cart or checkout."""
+    ev = f.events
+    if ev is None or ev.empty or "items" not in ev:
+        return []
+    w = ev[(ev["source"] == "webhook") & ev["items"].notna()]
+    pick = w[w["order_id"].astype(str) == str(shopify_order_id)] if shopify_order_id else w.iloc[0:0]
+    if pick.empty and session_key:
+        pick = w[w["session_key"] == session_key]
+    if pick.empty:
+        return []
+    return _json_items(pick.sort_values("occurred_at")["items"].iloc[-1])
+
+
+def _json_items(raw) -> list[dict]:
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else []
+        return v if isinstance(v, list) else []
+    except ValueError:
+        return []
+
+
+def products(f: Frames, limit: int = 50) -> dict:
+    """Per product: views, adds to cart and out-of-stock hits by agents vs
+    people, plus how agents move through the store."""
+    out = _meta(f)
+    j = f.journey
+    if j is None or j.empty:
+        out.update(products=[], agent_behaviour=None, top_agent_searches=[])
+        return out
+    s = f.sessions
+    cls = dict(zip(s["session_key"], s["traffic_class"])) if not s.empty else {}
+    j = j.assign(agent=j["session_key"].map(lambda k: cls.get(k, HUMAN) in (ASSISTANT, AUTOMATION)))
+    j = j[j["session_key"].map(lambda k: cls.get(k, HUMAN) not in (CRAWLER, SCRAPER))]
+    prod = j[j["product"].notna()]
+    rows = []
+    for handle, g in prod.groupby("product"):
+        title = g["title"].dropna().iloc[-1] if g["title"].notna().any() else handle
+        a, h = g[g["agent"]], g[~g["agent"]]
+        row = {"product": handle, "title": title,
+               "agent_views": int((a["kind"] == "page").sum()), "human_views": int((h["kind"] == "page").sum()),
+               "agent_adds": int((a["kind"] == "cart_add").sum()), "human_adds": int((h["kind"] == "cart_add").sum()),
+               "out_of_stock_hits": int(((g["kind"] == "dead_end") & (g["detail"] == "out_of_stock")).sum()),
+               "agent_out_of_stock_hits": int(((a["kind"] == "dead_end") & (a["detail"] == "out_of_stock")).sum())}
+        row["agent_add_rate"] = _ratio(row["agent_adds"], row["agent_views"])
+        row["human_add_rate"] = _ratio(row["human_adds"], row["human_views"])
+        rows.append(row)
+    rows.sort(key=lambda r: (r["agent_views"] + r["agent_adds"] * 3, r["human_views"]), reverse=True)
+
+    def behaviour(df):
+        if df.empty:
+            return None
+        g = df.assign(act=df["kind"] != "leave", srch=df["kind"] == "search", add=df["kind"] == "cart_add",
+                      viewed=df["product"].where(df["kind"] == "page"))
+        per = g.groupby("session_key").agg(steps=("act", "sum"), srch=("srch", "any"), add=("add", "any"),
+                                           prods=("viewed", "nunique"))
+        leaves = df[df["kind"] == "leave"]
+        return {"sessions": int(len(per)), "steps_per_session": _num(per["steps"].mean(), 1),
+                "products_per_session": _num(per["prods"].mean(), 1),
+                "search_share": _ratio(int(per["srch"].sum()), len(per)),
+                "add_share": _ratio(int(per["add"].sum()), len(per)),
+                "avg_seconds_on_page": _num(pd.to_numeric(leaves["dwell_ms"]).mean() / 1000, 1) if len(leaves) else None,
+                "avg_scroll_pct": _num(pd.to_numeric(leaves["scroll_pct"]).mean(), 0) if len(leaves) else None,
+                "dead_ends": int((df["kind"] == "dead_end").sum())}
+
+    searches = j[(j["kind"] == "search") & j["agent"] & j["query"].notna()]
+    out.update(
+        products=rows[:limit],
+        agent_behaviour={"agents": behaviour(j[j["agent"]]), "people": behaviour(j[~j["agent"]])},
+        top_agent_searches=[{"query": q, "count": int(n)}
+                            for q, n in searches["query"].value_counts().head(10).items()],
+        dead_ends=[{"path": p_, "detail": d, "agent_hits": int(n)} for (p_, d), n in
+                   j[(j["kind"] == "dead_end") & j["agent"]].groupby(["path", "detail"]).size()
+                   .sort_values(ascending=False).head(10).items()],
+    )
+    return out
 
 
 def threats(f: Frames) -> dict:

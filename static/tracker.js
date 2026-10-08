@@ -15,9 +15,11 @@
  *                       Decided once per session and remembered, so a
  *                       sampled session is recorded on every page.
  *
- * Privacy: never reads what is typed, pasted or selected. Only counts and
- * timings (how many clicks, how many keystrokes, whether a field changed
- * without any keys being pressed) leave the browser.
+ * Privacy: never reads what is typed, pasted or selected into forms. Only
+ * counts and timings (how many clicks, how many keystrokes, whether a field
+ * changed without any keys being pressed) leave the browser, plus the
+ * journey: pages and products viewed, adds to cart, and site search terms
+ * from the search URL (shortened; emails and long numbers redacted).
  *
  * Deliberately does not try to do fingerprinting Cloudflare/AWS already
  * do — it captures what's only visible inside the commerce flow itself:
@@ -344,6 +346,212 @@
     }
   }
 
+
+  // ---------------------------------------------------------------------
+  // Journey: what the visitor did, step by step. Page views (page type and
+  // product), searches, adds to cart, dead ends (404, out of stock) and,
+  // when leaving a page, time on page, scroll depth and time the tab was
+  // hidden. Batched to /journey as text/plain (no CORS preflight). Product
+  // and page data only; search text is shortened and redacted if it looks
+  // like an email or a long number; nothing typed into forms is sent.
+  // ---------------------------------------------------------------------
+  var JOURNEY_API = API.replace(/\/ingest\/?$/, "/journey");
+  var SHOP = (window.Shopify && window.Shopify.shop) || location.hostname;
+  var jQueue = [];
+  var jTimer = null;
+
+  function nextSeq() {
+    var n = 0;
+    try {
+      var raw = localStorage.getItem("_at_seq") || "";
+      var parts = raw.split(":");
+      if (parts[0] === sessionKey) n = parseInt(parts[1] || "0", 10) || 0;
+      localStorage.setItem("_at_seq", sessionKey + ":" + (n + 1));
+    } catch (e) {
+      /* storage blocked: seq stays 0, timestamps still order events */
+    }
+    return n + 1;
+  }
+
+  function flushJourney() {
+    clearTimeout(jTimer);
+    jTimer = null;
+    if (!jQueue.length || !originalFetch) return;
+    var body = JSON.stringify({ shop: SHOP, session_key: sessionKey, events: jQueue.splice(0, 60) });
+    try {
+      originalFetch(JOURNEY_API, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: body,
+        keepalive: true,
+        credentials: "omit",
+        mode: "no-cors",
+      }).catch(function () {});
+    } catch (e) {
+      /* never let tracking break the page */
+    }
+  }
+
+  function journeyEvent(kind, data) {
+    var e = { kind: kind, ts: Date.now(), seq: nextSeq(), path: landingPath() };
+    for (var k in data || {}) if (data[k] !== undefined && data[k] !== null) e[k] = data[k];
+    jQueue.push(e);
+    if (jQueue.length >= 20) flushJourney();
+    else if (!jTimer) jTimer = setTimeout(flushJourney, 3000);
+  }
+
+  function cleanQuery(q) {
+    q = String(q || "").trim().slice(0, 80);
+    if (!q) return null;
+    return /@|\d{6,}/.test(q) ? "[redacted]" : q;
+  }
+
+  var meta = (window.ShopifyAnalytics && window.ShopifyAnalytics.meta) || {};
+  function guessPageType() {
+    var p = location.pathname;
+    if (/\/products\//.test(p)) return "product";
+    if (/\/collections\//.test(p)) return "collection";
+    if (/\/search/.test(p)) return "searchresults";
+    if (/\/cart\/?$/.test(p)) return "cart";
+    if (/\/(pages|blogs|policies)\//.test(p)) return "page";
+    if (/^\/([a-z]{2}(-[a-z]{2})?\/?)?$/i.test(p)) return "home";
+    return "other";
+  }
+  var pageType = (meta.page && meta.page.pageType) || guessPageType();
+  var handleMatch = location.pathname.match(/\/products\/([^\/?#]+)/);
+  var productHandle = handleMatch ? decodeURIComponent(handleMatch[1]) : null;
+  function ogTitle() {
+    var m = document.querySelector('meta[property="og:title"]');
+    return m && m.content ? m.content.slice(0, 120) : null;
+  }
+  var is404 =
+    pageType === "404" ||
+    (document.body && /\btemplate-404\b/.test(document.body.className)) ||
+    /^\s*(404|page not found)/i.test(document.title || "");
+
+  function recordPage() {
+    if (is404) {
+      journeyEvent("dead_end", { page_type: "404", detail: "404" });
+      return;
+    }
+    journeyEvent("page", { page_type: pageType, product: productHandle, title: productHandle ? ogTitle() : null });
+    if (pageType === "searchresults" || /\/search/.test(location.pathname)) {
+      var q = null;
+      try {
+        q = new URLSearchParams(location.search).get("q");
+      } catch (e) {}
+      if (q) journeyEvent("search", { query: cleanQuery(q), page_type: "searchresults" });
+    }
+    // Product availability, from Shopify's public product JSON (same origin).
+    if (productHandle && originalFetch) {
+      originalFetch(location.pathname.replace(/\/$/, "") + ".js", { credentials: "same-origin" })
+        .then(function (r) {
+          return r.ok ? r.json() : null;
+        })
+        .then(function (prod) {
+          if (prod && prod.available === false) {
+            journeyEvent("dead_end", {
+              page_type: "product",
+              product: productHandle,
+              title: (prod.title || "").slice(0, 120),
+              detail: "out_of_stock",
+            });
+          }
+        })
+        .catch(function () {});
+    }
+  }
+
+  // Time on page, scroll depth, and how long the tab was hidden (agents
+  // often work in a background tab).
+  var pageStartAt = Date.now();
+  var maxScroll = 0;
+  var hiddenSince = document.visibilityState === "hidden" ? Date.now() : 0;
+  var hiddenMs = 0;
+  var leaveSent = false;
+  window.addEventListener(
+    "scroll",
+    function () {
+      var h = Math.max(document.documentElement.scrollHeight, 1);
+      var pct = Math.round(((window.scrollY + window.innerHeight) / h) * 100);
+      if (pct > maxScroll) maxScroll = Math.min(100, pct);
+    },
+    { passive: true }
+  );
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") {
+      hiddenSince = Date.now();
+      flushJourney();
+    } else if (hiddenSince) {
+      hiddenMs += Date.now() - hiddenSince;
+      hiddenSince = 0;
+    }
+  });
+  window.addEventListener("pagehide", function () {
+    if (leaveSent) return;
+    leaveSent = true;
+    var hid = hiddenMs + (hiddenSince ? Date.now() - hiddenSince : 0);
+    journeyEvent("leave", {
+      page_type: is404 ? "404" : pageType,
+      product: productHandle,
+      dwell_ms: Date.now() - pageStartAt,
+      scroll_pct: maxScroll,
+      hidden_ms: hid,
+    });
+    flushJourney();
+  });
+
+  // Adds to cart through a plain form post (themes without AJAX carts).
+  // AJAX themes (Dawn) cancel the submit and call /cart/add themselves; the
+  // fetch hook below records those, so a cancelled submit is skipped here.
+  document.addEventListener(
+    "submit",
+    function (ev) {
+      var f = ev.target;
+      if (!f || !f.action || !/\/cart\/add/.test(f.action)) return;
+      setTimeout(function () {
+        if (ev.defaultPrevented) return;
+        try {
+          var fd = new FormData(f);
+          journeyEvent("cart_add", {
+            product: productHandle,
+            title: productHandle ? ogTitle() : null,
+            variant_id: String(fd.get("id") || "").slice(0, 40) || null,
+            quantity: parseInt(fd.get("quantity") || "1", 10) || 1,
+            detail: "form",
+          });
+          flushJourney();
+        } catch (e) {}
+      }, 0);
+    },
+    true
+  );
+
+  function recordCartResponse(kind, data) {
+    if (!data) return;
+    if (kind === "add") {
+      var items = data.items && data.items.length ? data.items : data.variant_id ? [data] : [];
+      for (var i = 0; i < items.length && i < 10; i++) {
+        var it = items[i];
+        journeyEvent("cart_add", {
+          product: it.handle || null,
+          title: String(it.product_title || it.title || "").slice(0, 120) || null,
+          variant_id: it.variant_id ? String(it.variant_id) : null,
+          quantity: it.quantity || 1,
+          price: typeof it.final_price === "number" ? it.final_price / 100 : typeof it.price === "number" ? it.price / 100 : null,
+        });
+      }
+    } else {
+      journeyEvent("cart_change", {
+        detail: kind,
+        price: typeof data.total_price === "number" ? data.total_price / 100 : null,
+        quantity: typeof data.item_count === "number" ? data.item_count : null,
+      });
+    }
+  }
+
+  recordPage();
+
   // Basic pageview on load, with the automation fingerprint (checked once
   // per page; the server keeps the union across pages).
   post({ event_count: 1, automation_tells: automationTells() });
@@ -433,7 +641,8 @@
         typeof input === "string"
           ? input
           : (input && (input.url || input.href)) || "";
-      var isCartCall = /\/cart\/(add|change|update|clear)(\.js)?(\?|#|$)/.test(url);
+      var cartMatch = url.match(/\/cart\/(add|change|update|clear)(\.js)?(\?|#|$)/);
+      var isCartCall = !!cartMatch;
       var result = originalFetch(input, init);
       if (isCartCall) {
         result
@@ -443,7 +652,10 @@
               response
                 .clone()
                 .json()
-                .then(reportCart)
+                .then(function (data) {
+                  recordCartResponse(cartMatch[1], data);
+                  reportCart(data);
+                })
                 .catch(function () {
                   reportCart(null);
                 });

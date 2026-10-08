@@ -31,7 +31,8 @@ st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
 ui.inject_css()
 
-PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Threat testing", "Run report", "Connections"]
+PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Products", "Threat testing", "Run report",
+         "Connections"]
 # Deep links: ?view=report&minutes=30&shop=<store> opens the run report directly.
 _qp = st.query_params
 if _qp.get("view") == "report" and "nav" not in st.session_state:
@@ -401,6 +402,8 @@ elif page == "Agent sessions":
                     st.markdown('<div class="at-card-sub" style="margin-top:10px"><b>Requests seen at the edge'
                                 '</b></div>' + "".join(f'<div class="at-signal"><code>{ui.esc(x)}</code></div>'
                                                        for x in reqs), unsafe_allow_html=True)
+            ui.card_title("What it did", ui.journey_facts(det.get("journey_summary")) or None)
+            ui.timeline(det.get("journey") or [])
 
 # ---------------------------------------------------------------------------
 # Orders
@@ -475,7 +478,17 @@ elif page == "Orders":
                         st.markdown('<div class="at-card-sub"><b>Why the session was classed this way</b></div>'
                                     + "".join(f'<div class="at-signal"><span>●</span><span>{ui.esc(x["text"])}'
                                               "</span></div>" for x in reasons), unsafe_allow_html=True)
+                    if det.get("journey"):
+                        st.markdown('<div class="at-card-sub" style="margin-top:10px"><b>What it did</b> · '
+                                    + ui.esc(ui.journey_facts(det.get("journey_summary"))) + "</div>",
+                                    unsafe_allow_html=True)
+                        ui.timeline(det["journey"])
                 with b:
+                    items = det.get("items") or []
+                    if items:
+                        st.markdown('<div class="at-card-sub"><b>Items</b></div>', unsafe_allow_html=True)
+                        ui.kv_list({f"{i.get('quantity', 1)} × {i.get('title') or i.get('variant_id')}":
+                                    money((i.get("price") or 0) * (i.get("quantity") or 1)) for i in items})
                     steps = det.get("checkout_steps") or []
                     if steps:
                         ui.kv_list({s["step"].replace("checkout_", "").replace("_", " "): f"+{s['seconds']:.0f}s"
@@ -514,6 +527,75 @@ elif page == "Orders":
             } for f in d["flagged"]]), hide_index=True, use_container_width=True)
         else:
             st.markdown('<div class="at-card-sub">Nothing flagged this period.</div>', unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Products: what agents look at, add and get stuck on
+# ---------------------------------------------------------------------------
+elif page == "Products":
+    d = load("products")
+    header("Products", d)
+    beh = d.get("agent_behaviour") or {}
+    ag, pp = beh.get("agents"), beh.get("people")
+    if not d.get("products") or not ag:
+        empty("No page-by-page steps yet. They come from the tracker: browse the store, or run an agent "
+              "against it, and they appear here within a minute.")
+        st.stop()
+
+    def vs(a, b, fmt):
+        return f"people: {fmt(b)}" if b is not None else None
+
+    sec = lambda v: "—" if v is None else f"{v:.0f}s"  # noqa: E731
+    ui.kpi_row([
+        ui.kpi("Products per agent visit", f"{ag['products_per_session'] or 0:.1f}",
+               vs(ag, pp and pp["products_per_session"], lambda v: f"{v:.1f}"),
+               colour=charts.CLASS_COLOURS["automation"]),
+        ui.kpi("Agents that search", pct(ag["search_share"], 0), vs(ag, pp and pp["search_share"], lambda v: pct(v, 0))),
+        ui.kpi("Time on page (agents)", sec(ag["avg_seconds_on_page"]),
+               vs(ag, pp and pp["avg_seconds_on_page"], sec),
+               help="Agents read a page in seconds; people take closer to a minute."),
+        ui.kpi("Agent dead ends", f"{ag['dead_ends']:,}", "404s and out-of-stock products",
+               tone="alert" if ag["dead_ends"] else "neutral"),
+    ])
+    st.write("")
+    with st.container(border=True):
+        ui.card_title("Products by agent attention", "Views and adds to cart by agents and by people. "
+                      "Add rate = adds ÷ views.")
+        st.dataframe(pd.DataFrame([{
+            "Product": r["title"], "Agent views": r["agent_views"], "Agent adds": r["agent_adds"],
+            "Agent add rate": r["agent_add_rate"], "People views": r["human_views"], "People adds": r["human_adds"],
+            "People add rate": r["human_add_rate"], "Out of stock hits": r["out_of_stock_hits"]}
+            for r in d["products"]]), hide_index=True, use_container_width=True, height=360,
+            column_config={"Agent add rate": st.column_config.NumberColumn(format="percent"),
+                           "People add rate": st.column_config.NumberColumn(format="percent")})
+    left, right = st.columns(2, gap="medium")
+    with left, st.container(border=True):
+        ui.card_title("What agents search for", "Site searches by agents, most common first.")
+        q = d.get("top_agent_searches") or []
+        if q:
+            plot(charts.hbars([x["query"] for x in q], [x["count"] for x in q], ["#4a3aa7"] * len(q), fmt=",d"))
+        else:
+            st.markdown('<div class="at-card-sub">No agent searches yet.</div>', unsafe_allow_html=True)
+    with right, st.container(border=True):
+        ui.card_title("Where agents get stuck", "Missing pages and out-of-stock products agents hit.")
+        de = d.get("dead_ends") or []
+        if de:
+            ui.kv_list({f"{x['path']} ({'out of stock' if x['detail'] == 'out_of_stock' else '404'})":
+                        f"{x['agent_hits']}×" for x in de})
+        else:
+            st.markdown('<div class="at-card-sub">No dead ends hit by agents.</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        ui.card_title("How agents shop vs people", "Per visit, from the tracker's page-by-page steps.")
+        rows = [("Visits with steps", "sessions", lambda v: f"{v:,}"),
+                ("Steps per visit", "steps_per_session", lambda v: f"{v:.1f}"),
+                ("Products viewed per visit", "products_per_session", lambda v: f"{v:.1f}"),
+                ("Visits that searched", "search_share", lambda v: pct(v, 0)),
+                ("Visits that added to cart", "add_share", lambda v: pct(v, 0)),
+                ("Average time on a page", "avg_seconds_on_page", sec),
+                ("Average scroll depth", "avg_scroll_pct", lambda v: f"{v:.0f}%")]
+        st.dataframe(pd.DataFrame([{
+            "": label, "Agents": "—" if ag.get(k) is None else f(ag[k]),
+            "People": "—" if not pp or pp.get(k) is None else f(pp[k])} for label, k, f in rows]),
+            hide_index=True, use_container_width=True)
 
 # ---------------------------------------------------------------------------
 # Threat testing
@@ -590,6 +672,9 @@ elif page == "Run report":
                 st.markdown(f"- {r['text']}")
             if x.get("edge_requests"):
                 st.code("\n".join(x["edge_requests"]), language=None)
+            if x.get("journey"):
+                st.caption("Journey: " + ui.journey_facts(x.get("journey_summary")))
+                ui.timeline(x["journey"])
             if x.get("checkout_steps"):
                 st.caption("Checkout steps (pixel): " + " → ".join(
                     f"{c['step'].replace('checkout_', '').replace('_submitted', '')} +{c['seconds']:.0f}s"
@@ -606,6 +691,7 @@ elif page == "Run report":
         for c in rep["commerce_events"]:
             st.caption(f"{c['occurred_at'][11:19]} UTC · {c['topic']} · …{c['token'] or '—'} · "
                        f"{c['items']} items · {money(c['total'])} · "
+                       + (f"{'; '.join(c['lines'])} · " if c.get("lines") else "")
                        + ("storefront session " + (c['session_key'] or '(linked cart)') if c["storefront_session"]
                           else "**no storefront session**"))
     if rep.get("webhook_deliveries"):

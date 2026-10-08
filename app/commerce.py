@@ -7,6 +7,8 @@ POST /webhooks/shopify/commerce   carts/create, carts/update, checkouts/create,
 POST /pixel/events                checkout step timings from the app's web pixel.
                                   Public like the tracker; text/plain JSON so the
                                   sandboxed pixel needs no CORS preflight.
+POST /journey                     page-by-page steps from the tracker (pages,
+                                  searches, adds to cart, dead ends, time on page).
 
 Only tokens, totals, item counts, step names and times are stored. Never
 names, emails, addresses or payment details.
@@ -15,13 +17,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session as DBSession
 
 from app.db import get_db
-from app.models import CommerceEvent, WebhookLog
+from app.models import CommerceEvent, JourneyEvent, WebhookLog
 from app.shopify_webhooks import SESSION_ATTRIBUTE_NAME, get_webhook_secret, verify_shopify_hmac
 from app.shops import normalise_shop
 
@@ -34,6 +37,9 @@ PIXEL_EVENTS = {
     "checkout_shipping_info_submitted", "payment_info_submitted", "checkout_completed",
 }
 MAX_PIXEL_BYTES = 4096
+MAX_JOURNEY_BYTES = 32768
+MAX_JOURNEY_EVENTS = 60
+JOURNEY_KINDS = {"page", "search", "cart_add", "cart_change", "dead_end", "leave"}
 
 
 def log_webhook(db: DBSession, shop: str | None, topic: str | None, outcome: str, detail: str | None = None) -> None:
@@ -88,6 +94,23 @@ def _float(value) -> float | None:
         return None
 
 
+def _items(items: list) -> str | None:
+    """Product-level line items only (no buyer data), capped at 50 lines."""
+    out = []
+    for i in items[:50]:
+        if not isinstance(i, dict):
+            continue
+        price = _float(i.get("price"))  # webhook prices are decimal strings ("45.00")
+        out.append({
+            "product_id": str(i.get("product_id") or "")[:40] or None,
+            "variant_id": str(i.get("variant_id") or i.get("id") or "")[:40] or None,
+            "title": (str(i.get("title") or i.get("product_title") or "")[:120]) or None,
+            "quantity": int(i.get("quantity") or 1),
+            "price": price,
+        })
+    return json.dumps(out) if out else None
+
+
 def event_from_webhook(shop: str, topic: str, payload: dict, webhook_id: str | None) -> CommerceEvent:
     items = payload.get("line_items") or []
     total = _float(payload.get("total_price"))
@@ -103,6 +126,7 @@ def event_from_webhook(shop: str, topic: str, payload: dict, webhook_id: str | N
         total=total,
         item_count=sum(int(i.get("quantity") or 1) for i in items) if items else 0,
         source_name=(str(payload.get("source_name"))[:100] if payload.get("source_name") else None),
+        items=_items(items),
         occurred_at=_when(payload.get("updated_at") or payload.get("created_at")),
     )
 
@@ -165,3 +189,60 @@ async def pixel_events(request: Request, db: DBSession = Depends(get_db)):
     ))
     db.commit()
     return {"status": "recorded"}
+
+
+def _clean_query(q) -> str | None:
+    """Search text, shortened; dropped if it looks like an email or a long number."""
+    if not q:
+        return None
+    q = str(q).strip()[:80]
+    if "@" in q or re.search(r"\d{6,}", q):
+        return "[redacted]"
+    return q or None
+
+
+def _int(v, lo: int = 0, hi: int = 10**9) -> int | None:
+    try:
+        return max(lo, min(hi, int(float(v))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _s(v, n: int) -> str | None:
+    return str(v)[:n] if v not in (None, "") else None
+
+
+@router.post("/journey")
+async def journey(request: Request, db: DBSession = Depends(get_db)):
+    """Batched visit steps from tracker.js (text/plain JSON, no preflight)."""
+    raw = await request.body()
+    if len(raw) > MAX_JOURNEY_BYTES:
+        raise HTTPException(status_code=413, detail="too large")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON") from exc
+    shop = normalise_shop(body.get("shop"))
+    key = str(body.get("session_key") or "")[:64]
+    if not shop or not key or not key.replace("_", "").replace("-", "").isalnum():
+        raise HTTPException(status_code=400, detail="unknown shop or session")
+    n = 0
+    for e in (body.get("events") or [])[:MAX_JOURNEY_EVENTS]:
+        if not isinstance(e, dict) or e.get("kind") not in JOURNEY_KINDS:
+            continue
+        ts = e.get("ts")
+        when = (datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                if isinstance(ts, (int, float)) and ts > 1e12 else datetime.now(timezone.utc))
+        db.add(JourneyEvent(
+            shop_domain=shop, session_key=key, seq=_int(e.get("seq")), kind=e["kind"],
+            path=_s(e.get("path"), 300), page_type=_s(e.get("page_type"), 40),
+            product=_s(e.get("product"), 120), title=_s(e.get("title"), 120),
+            variant_id=_s(e.get("variant_id"), 40), quantity=_int(e.get("quantity"), 0, 10000),
+            price=_float(e.get("price")), query=_clean_query(e.get("query")),
+            detail=_s(e.get("detail"), 60), dwell_ms=_int(e.get("dwell_ms"), 0, 86_400_000),
+            scroll_pct=_int(e.get("scroll_pct"), 0, 100), hidden_ms=_int(e.get("hidden_ms"), 0, 86_400_000),
+            occurred_at=when,
+        ))
+        n += 1
+    db.commit()
+    return {"status": "recorded", "events": n}

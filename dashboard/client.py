@@ -25,6 +25,7 @@ _VIEWS = {
     "referrals": metrics.referrals,
     "orders": metrics.orders_summary,
     "threats": metrics.threats,
+    "products": metrics.products,
 }
 
 

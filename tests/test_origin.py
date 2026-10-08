@@ -11,7 +11,7 @@ def _steps(gaps):
     names = list(metrics.FORM_STEPS) + ["payment_info_submitted"]
     out = []
     for name, g in zip(names, [0] + gaps):
-        t += pd.Timedelta(seconds=g)
+        t += pd.Timedelta(seconds=float(g))
         out.append((name, t))
     return out
 

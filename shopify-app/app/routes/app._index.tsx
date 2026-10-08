@@ -252,7 +252,9 @@ export default function Index() {
       <s-section slot="aside" heading="Privacy">
         <s-paragraph>
           Agent Trust records behaviour (mouse movement, clicks, typing cadence as counts, checkout step
-          times), never what customers type, and never card details. IP addresses are hashed.
+          times), the pages and products viewed, adds to cart, and site search terms (shortened, with emails
+          and long numbers removed). Never what customers type into forms, and never card details. IP
+          addresses are hashed.
         </s-paragraph>
       </s-section>
     </s-page>

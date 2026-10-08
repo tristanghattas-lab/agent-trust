@@ -255,8 +255,40 @@ class CommerceEvent(Base):
     total: Mapped[float | None] = mapped_column(Float, nullable=True)
     item_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Line items as JSON: [{product_id, variant_id, title, quantity, price}].
+    # Product data only, nothing about the buyer.
+    items: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class JourneyEvent(Base):
+    """One step of a visit, from the tracker: a page viewed, a search, an
+    add to cart, a dead end, or leaving a page (time on page, scroll depth).
+    Paths keep only utm/ref parameters; search text is shortened and
+    redacted if it looks like an email or a number. Nothing typed into
+    forms is ever sent."""
+
+    __tablename__ = "journey_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    session_key: Mapped[str] = mapped_column(String, index=True)
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kind: Mapped[str] = mapped_column(String)   # page | search | cart_add | cart_change | dead_end | leave
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    product: Mapped[str | None] = mapped_column(String, nullable=True)   # product handle
+    title: Mapped[str | None] = mapped_column(String, nullable=True)     # product title
+    variant_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    query: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str | None] = mapped_column(String, nullable=True)    # e.g. out_of_stock, 404
+    dwell_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scroll_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hidden_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
 
 
 class WebhookLog(Base):
