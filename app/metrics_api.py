@@ -9,6 +9,7 @@ Metrics endpoints: one per view, scoped to a store.
     GET /metrics/orders/list?shop=...&days=...        (origin + evidence per order)
     GET /metrics/orders/{order_id}?shop=...           (one order's evidence chain)
     GET /metrics/products?shop=...&days=...           (products and agent behaviour)
+    GET /metrics/scan?shop=...&days=60                (AI orders in recent order history)
     GET /metrics/threats?shop=...
 
 shop=demo serves the synthetic dataset, so a front end can be built before a
@@ -118,6 +119,13 @@ def get_order(order_id: str, shop: str = Depends(resolve_shop), days: int = Quer
     if detail is None:
         raise HTTPException(status_code=404, detail="order not found for this shop")
     return detail
+
+
+@router.get("/scan", dependencies=deps)
+def get_scan(shop: str = Depends(resolve_shop), days: int = Query(60, ge=1, le=365)):
+    """AI orders and revenue across the store's recent orders, including
+    past orders scanned when the Shopify app was installed."""
+    return metrics.scan(metrics.load_frames(engine, shop, days))
 
 
 @router.get("/products", dependencies=deps)

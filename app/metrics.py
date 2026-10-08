@@ -1354,6 +1354,42 @@ def products(f: Frames, limit: int = 50) -> dict:
     return out
 
 
+def scan(f: Frames) -> dict:
+    """The install-time headline: AI orders in the store's recent history,
+    from every order we hold (past orders scanned on install plus live ones).
+    Test orders are counted but left out of revenue."""
+    out = _meta(f)
+    rows = _order_rows(f)
+    real = [x for x in rows if not x["is_test"]]
+    ai = [x for x in real if x["origin"] in AI_ORIGINS]
+    total_rev = sum(x["order_value"] or 0 for x in real)
+    ai_rev = sum(x["order_value"] or 0 for x in ai)
+    by = {}
+    for x in ai:
+        if x["origin"] == "ai_channel":
+            key = f"{x['agent'] or 'AI app'} (checkout inside the app)"
+        elif x["origin"] == "ai_referred":
+            key = f"{x['ai_source'] or 'AI'} (referred a shopper)"
+        else:
+            key = f"{x['agent'] or 'Agent'} (agent shopped the store)"
+        b = by.setdefault(key, {"source": key, "orders": 0, "revenue": 0.0})
+        b["orders"] += 1
+        b["revenue"] += x["order_value"] or 0
+    o = f.orders
+    backfilled = int((o["session_match_method"] == "backfill").sum()) if not o.empty and "session_match_method" in o else 0
+    aov_ai = ai_rev / len(ai) if ai else None
+    others = [x for x in real if x["origin"] not in AI_ORIGINS]
+    aov_other = sum(x["order_value"] or 0 for x in others) / len(others) if others else None
+    out.update(
+        orders=len(rows), test_orders=len(rows) - len(real), revenue=_num(total_rev, 2),
+        ai_orders=len(ai), ai_revenue=_num(ai_rev, 2), ai_revenue_share=_ratio(ai_rev, total_rev),
+        ai_aov=_num(aov_ai, 2), other_aov=_num(aov_other, 2), orders_from_scan=backfilled,
+        by_source=sorted(({**b, "revenue": _num(b["revenue"], 2)} for b in by.values()),
+                         key=lambda b: b["revenue"] or 0, reverse=True),
+    )
+    return out
+
+
 def threats(f: Frames) -> dict:
     r = f.runs
     out = _meta(f)

@@ -304,3 +304,18 @@ class WebhookLog(Base):
     outcome: Mapped[str] = mapped_column(String)   # recorded | duplicate | rejected | ignored | error
     detail: Mapped[str | None] = mapped_column(String, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class BackfillRun(Base):
+    """A scan of a store's past orders (by the Shopify app, on install), so
+    a merchant sees AI orders from before Agent Trust was installed."""
+
+    __tablename__ = "backfill_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    orders_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    orders_added: Mapped[int] = mapped_column(Integer, default=0)
+    oldest_order_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

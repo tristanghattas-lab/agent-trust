@@ -56,6 +56,11 @@ AI_REFERRER_SOURCES = {
     "gemini.google.com": "Gemini",
     "copilot.microsoft.com": "Copilot",
     "claude.ai": "Claude",
+    "copilot.com": "Copilot",
+    "meta.ai": "Meta AI",
+    "grok.com": "Grok",
+    "chat.mistral.ai": "Mistral",
+    "chat.deepseek.com": "DeepSeek",
 }
 
 FUNNEL_STAGES = ["Visited", "Viewed product", "Added to cart", "Started checkout", "Ordered"]

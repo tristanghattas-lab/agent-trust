@@ -1,7 +1,8 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { authenticate } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
+import { ensureOrderScan, scanSummary, SCAN_DAYS } from "../agent-trust.server";
 
 /**
  * Agent Trust home inside Shopify admin.
@@ -11,6 +12,18 @@ import { authenticate } from "../shopify.server";
  * Trust API and links to switch on the tracker embed and open the full
  * dashboard.
  */
+
+type Scan = {
+  orders: number;
+  test_orders: number;
+  revenue: number | null;
+  ai_orders: number;
+  ai_revenue: number | null;
+  ai_revenue_share: number | null;
+  ai_aov: number | null;
+  other_aov: number | null;
+  by_source: { source: string; orders: number; revenue: number | null }[];
+} | null;
 
 type Attention = { severity: "high" | "medium" | "info"; title: string; detail: string; page?: string };
 
@@ -98,11 +111,24 @@ async function fetchSummary(shop: string): Promise<Summary> {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const [pixel, summary] = await Promise.all([ensurePixel(admin, shop), fetchSummary(shop)]);
+  const [pixel, summary, scanState] = await Promise.all([
+    ensurePixel(admin, shop),
+    fetchSummary(shop),
+    // Past-order scan: starts in the background on first open, then shows its result.
+    ensureOrderScan(shop, async () => (await unauthenticated.admin(shop)).admin.graphql),
+  ]);
+  let scan: Scan = null;
+  if (scanState.status === "done") {
+    try {
+      scan = await scanSummary(shop);
+    } catch {
+      scan = null;
+    }
+  }
   const embedLink =
     `https://${shop}/admin/themes/current/editor?context=apps&template=index` +
     `&activateAppId=${process.env.SHOPIFY_API_KEY}/tracker`;
-  return { shop, pixel, summary, embedLink, dashboard: `${DASHBOARD}/?shop=${shop}` };
+  return { shop, pixel, summary, scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink, dashboard: `${DASHBOARD}/?shop=${shop}` };
 };
 
 const SOURCE_NAMES: Record<string, string> = {
@@ -135,13 +161,57 @@ function Kpi({ label, value, note, tone }: { label: string; value: string; note:
 }
 
 export default function Index() {
-  const { shop, pixel, summary, embedLink, dashboard } = useLoaderData<typeof loader>();
+  const { shop, pixel, summary, scan, scanStatus, scanDays, embedLink, dashboard } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Agent Trust">
       <s-button slot="primary-action" href={dashboard} target="_blank">
         Open dashboard
       </s-button>
+
+      <s-section heading={`AI in your last ${scanDays} days of orders`}>
+        {scan ? (
+          <s-stack direction="block" gap="base">
+            {scan.ai_orders ? (
+              <s-heading>
+                {scan.ai_orders} order{scan.ai_orders === 1 ? "" : "s"} worth {money(scan.ai_revenue)} came from AI
+                {scan.ai_revenue_share != null ? ` (${pct(scan.ai_revenue_share)} of revenue)` : ""}
+              </s-heading>
+            ) : (
+              <s-heading>No AI orders found in your last {scanDays} days</s-heading>
+            )}
+            {scan.ai_aov != null && scan.other_aov != null && (
+              <s-text color="subdued">
+                Average AI order {money(scan.ai_aov)}, against {money(scan.other_aov)} for everything else.
+              </s-text>
+            )}
+            {scan.by_source.length > 0 && (
+              <s-stack direction="block" gap="small-300">
+                {scan.by_source.map((b) => (
+                  <s-stack key={b.source} direction="inline" gap="small-200">
+                    <s-text type="strong">{b.source}:</s-text>
+                    <s-text>
+                      {b.orders} order{b.orders === 1 ? "" : "s"}, {money(b.revenue)}
+                    </s-text>
+                  </s-stack>
+                ))}
+              </s-stack>
+            )}
+            <s-text color="subdued">
+              From {scan.orders.toLocaleString()} orders
+              {scan.test_orders ? ` (${scan.test_orders} test orders not counted)` : ""}, using Shopify's own
+              referral and sales-channel data. Agents that hide what they are don't show up here: the tracker
+              catches those from now on.
+            </s-text>
+          </s-stack>
+        ) : (
+          <s-paragraph>
+            {scanStatus === "never"
+              ? "Couldn't start the scan of your past orders. Reload this page to try again."
+              : `Scanning your last ${scanDays} days of orders for AI referrals and AI checkouts. Reload this page in a minute.`}
+          </s-paragraph>
+        )}
+      </s-section>
 
       {summary ? (
         <>
