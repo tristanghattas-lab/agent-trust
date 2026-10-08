@@ -1,0 +1,11 @@
+api_version = "2026-07"
+
+[[extensions]]
+name = "t:name"
+handle = "agent-trust-order-block"
+type = "ui_extension"
+
+# Agent Trust verdict on each order: origin, agent identity, evidence, action.
+[[extensions.targeting]]
+module = "./src/OrderBlock.jsx"
+target = "admin.order-details.block.render"

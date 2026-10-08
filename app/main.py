@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import text
@@ -305,6 +305,7 @@ def match_session_by_user_agent(
 @app.post("/webhooks/shopify/orders")
 async def shopify_order_webhook(
     request: Request,
+    background: BackgroundTasks,
     db: DBSession = Depends(get_db),
     x_shopify_hmac_sha256: str | None = Header(default=None),
     x_shopify_topic: str | None = Header(default=None),
@@ -373,6 +374,9 @@ async def shopify_order_webhook(
     db.refresh(order)
     from app.commerce import log_webhook
     log_webhook(db, shop, x_shopify_topic or "orders/create", "recorded")
+    # Tag the order in Shopify with its AI origin (via the Shopify app).
+    from app.order_tags import request_tags
+    background.add_task(request_tags, shop, order.shopify_order_id)
 
     return {
         "status": "recorded",

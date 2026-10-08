@@ -115,7 +115,7 @@ services:
       - key: SHOPIFY_API_SECRET
         sync: false
       - key: SCOPES
-        value: read_orders,write_pixels,read_customer_events
+        value: read_orders,write_orders,write_pixels,read_customer_events
       - key: AGENT_TRUST_API_URL
         value: https://agent-trust-api-o7u9.onrender.com
       - key: AGENT_TRUST_DASHBOARD_URL

@@ -891,7 +891,9 @@ def _order_rows(f: Frames) -> list[dict]:
         review = bool(r.flags) or (
             origin in ("agent_placed", "agent") and ident in ("undeclared", "declared", "signed")
             and (r.order_value or 0) >= REVIEW_VALUE and not is_test)
+        action, reason = _action(r.flags, review, origin, ident, r.order_value)
         rows.append({
+            "action": action, "action_reason": reason,
             "order_id": r.id, "shopify_order_id": _str(r.shopify_order_id), "created_at": _iso(r.created_at),
             "order_value": _num(r.order_value, 2), "is_test": is_test,
             "origin": origin, "origin_label": ORIGINS[origin],
@@ -907,6 +909,22 @@ def _order_rows(f: Frames) -> list[dict]:
             "chain": chain,
         })
     return rows
+
+
+def _action(flags, review: bool, origin: str, ident: str | None, value) -> tuple[str, str]:
+    """A recommended action with a one-line reason, for the order page."""
+    if flags:
+        return "review", flags[0]
+    if review:
+        return "review", (f"An agent placed this ${value or 0:,.0f} order without proving who it is. "
+                          "Check the evidence before fulfilling.")
+    if origin in ("agent_placed", "agent", "agent_assisted") and ident == "verified":
+        return "accept", "Placed through a verified agent."
+    if origin == "agent_assisted":
+        return "accept", "An agent built the order and a person completed payment."
+    if origin in ("agent_placed", "agent"):
+        return "accept", "Agent order with no risk signals, under the review threshold."
+    return "accept", "No risk signals."
 
 
 def _chain(r, steps, origin: str, ident: str | None) -> list[dict]:

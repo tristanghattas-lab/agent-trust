@@ -49,3 +49,15 @@ def test_demo_overview_has_ai_orders_block():
     chain = metrics.order_detail(f, oid)["chain"]
     assert [c["step"] for c in chain] == ["Origin", "Session", "Agent identity", "Checkout", "Order"]
     assert "handed off" in chain[3]["text"]
+
+
+def test_recommended_action():
+    assert metrics._action(["Discount request in address"], False, "agent_placed", "undeclared", 50)[0] == "review"
+    assert metrics._action([], True, "agent_placed", "undeclared", 900)[0] == "review"
+    assert metrics._action([], False, "agent_placed", "verified", 900) == ("accept", "Placed through a verified agent.")
+    assert metrics._action([], False, "human", None, 900)[0] == "accept"
+
+
+def test_tagging_is_off_in_tests():
+    from app.order_tags import request_tags
+    assert request_tags("73ee52.myshopify.com", "1", delay=0) is False
