@@ -12,11 +12,22 @@ import { authenticate } from "../shopify.server";
  * dashboard.
  */
 
+type Attention = { severity: "high" | "medium" | "info"; title: string; detail: string; page?: string };
+
 type Summary = {
   sessions: number;
   agentSessions: number;
   agentShare: number | null;
+  aiRevenue: number;
+  aiRevenueShare: number | null;
+  aiOrders: number;
+  aiTestOrders: number;
   agentOrders: number;
+  agentRevenue: number;
+  agentConversion: number | null;
+  humanConversion: number | null;
+  needsReview: number;
+  attention: Attention[];
   sources: Record<string, boolean>;
 } | null;
 
@@ -60,11 +71,21 @@ async function fetchSummary(shop: string): Promise<Summary> {
     });
     if (!r.ok) return null;
     const d = await r.json();
+    const ao = d.ai_orders ?? {};
     return {
       sessions: d.kpis?.sessions ?? 0,
       agentSessions: d.kpis?.agent_sessions ?? 0,
       agentShare: d.kpis?.agent_share ?? null,
-      agentOrders: d.kpis?.ai_influenced_orders ?? 0,
+      aiRevenue: ao.ai_revenue ?? d.kpis?.ai_influenced_revenue ?? 0,
+      aiRevenueShare: ao.ai_revenue_share ?? null,
+      aiOrders: ao.ai_orders ?? d.kpis?.ai_influenced_orders ?? 0,
+      aiTestOrders: ao.ai_test_orders ?? 0,
+      agentOrders: ao.agent_orders ?? 0,
+      agentRevenue: ao.agent_revenue ?? 0,
+      agentConversion: ao.agent_conversion ?? null,
+      humanConversion: ao.human_conversion ?? null,
+      needsReview: ao.needs_review ?? d.kpis?.flagged_orders ?? 0,
+      attention: ao.attention ?? [],
       sources: Object.fromEntries(
         (d.coverage?.sources ?? []).map((x: { key: string; connected: boolean }) => [x.key, x.connected]),
       ),
@@ -92,9 +113,29 @@ const SOURCE_NAMES: Record<string, string> = {
   pixel: "Checkout pixel",
 };
 
+const TONE = { high: "critical", medium: "warning", info: "info" } as const;
+const LABEL = { high: "Urgent", medium: "Review", info: "Tip" } as const;
+
+const pct = (v: number | null, digits = 1) => (v == null ? "—" : `${(v * 100).toFixed(digits)}%`);
+const money = (v: number | null) =>
+  v == null ? "—" : `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+function Kpi({ label, value, note, tone }: { label: string; value: string; note: string; tone?: "critical" }) {
+  return (
+    <s-box padding="base" border="base" borderRadius="base" background="base">
+      <s-stack direction="block" gap="small-300">
+        <s-text color="subdued">{label}</s-text>
+        <s-heading>{value}</s-heading>
+        <s-text color="subdued" tone={tone}>
+          {note}
+        </s-text>
+      </s-stack>
+    </s-box>
+  );
+}
+
 export default function Index() {
   const { shop, pixel, summary, embedLink, dashboard } = useLoaderData<typeof loader>();
-  const pct = (v: number | null) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
 
   return (
     <s-page heading="Agent Trust">
@@ -102,31 +143,86 @@ export default function Index() {
         Open dashboard
       </s-button>
 
-      <s-section heading="What AI agents are doing on your store">
-        {summary ? (
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              Last 30 days: <s-text type="strong">{summary.sessions.toLocaleString()}</s-text> sessions,{" "}
-              <s-text type="strong">{summary.agentSessions.toLocaleString()}</s-text> from agents (
-              {pct(summary.agentShare)}). AI-influenced orders:{" "}
-              <s-text type="strong">{summary.agentOrders}</s-text>.
-            </s-paragraph>
-            <s-stack direction="inline" gap="small-200">
-              {Object.entries(SOURCE_NAMES).map(([k, label]) => (
-                <s-badge key={k} tone={summary.sources[k] ? "success" : "neutral"}>
-                  {summary.sources[k] ? "● " : "○ "}
-                  {label}
-                </s-badge>
-              ))}
+      {summary ? (
+        <>
+          <s-section heading="Last 30 days">
+            <s-query-container>
+              <s-grid
+                gridTemplateColumns="@container (inline-size > 640px) repeat(4, 1fr), repeat(2, 1fr)"
+                gap="base"
+              >
+                <Kpi
+                  label="Revenue from AI"
+                  value={money(summary.aiRevenue)}
+                  note={
+                    (summary.aiRevenueShare != null ? `${pct(summary.aiRevenueShare)} of revenue · ` : "") +
+                    `${summary.aiOrders} orders` +
+                    (summary.aiTestOrders ? ` (${summary.aiTestOrders} test, not counted)` : "")
+                  }
+                />
+                <Kpi
+                  label="Agent orders"
+                  value={summary.agentOrders.toLocaleString()}
+                  note={`${money(summary.agentRevenue)} placed or assisted by agents`}
+                />
+                <Kpi
+                  label="Agent conversion"
+                  value={pct(summary.agentConversion, 2)}
+                  note={summary.humanConversion != null ? `people convert at ${pct(summary.humanConversion, 2)}` : ""}
+                />
+                <Kpi
+                  label="Needs review"
+                  value={String(summary.needsReview)}
+                  note="orders to check before fulfilling"
+                  tone={summary.needsReview ? "critical" : undefined}
+                />
+              </s-grid>
+            </s-query-container>
+          </s-section>
+
+          <s-section heading="Needs attention">
+            {summary.attention.length ? (
+              <s-stack direction="block" gap="base">
+                {summary.attention.map((a, i) => (
+                  <s-stack key={i} direction="inline" gap="small" alignItems="start">
+                    <s-badge tone={TONE[a.severity]}>{LABEL[a.severity]}</s-badge>
+                    <s-stack direction="block" gap="none">
+                      <s-text type="strong">{a.title}</s-text>
+                      <s-text color="subdued">{a.detail}</s-text>
+                    </s-stack>
+                  </s-stack>
+                ))}
+              </s-stack>
+            ) : (
+              <s-paragraph>Nothing needs you right now.</s-paragraph>
+            )}
+          </s-section>
+
+          <s-section heading="Data sources">
+            <s-stack direction="block" gap="small">
+              <s-paragraph>
+                {summary.sessions.toLocaleString()} sessions, {summary.agentSessions.toLocaleString()} from agents (
+                {pct(summary.agentShare)}).
+              </s-paragraph>
+              <s-stack direction="inline" gap="small-200">
+                {Object.entries(SOURCE_NAMES).map(([k, label]) => (
+                  <s-badge key={k} tone={summary.sources[k] ? "success" : "neutral"}>
+                    {summary.sources[k] ? "● " : "○ "}
+                    {label}
+                  </s-badge>
+                ))}
+              </s-stack>
             </s-stack>
-          </s-stack>
-        ) : (
+          </s-section>
+        </>
+      ) : (
+        <s-section heading="What AI agents are doing on your store">
           <s-paragraph>
-            No data yet for {shop}. Switch on the tracker below, then browse your store or place a test
-            order: results appear within a few minutes.
+            No data yet for {shop}. Switch on the tracker below, then browse your store or place a test order:
+            results appear within a few minutes.
           </s-paragraph>
-        )}
-      </s-section>
+        </s-section>
+      )}
 
       <s-section heading="Setup">
         <s-stack direction="block" gap="base">
