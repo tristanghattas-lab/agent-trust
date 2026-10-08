@@ -136,6 +136,9 @@ def is_browser_like(r: EdgeRecord) -> bool:
     )
 
 
+TRACKER_OWN_PATHS = re.compile(r"^(/[a-z]{2}(-[a-z]{2})?)?(/collections/[^/]+)?/products/[^/]+\.js$|/cart(/update)?\.js$", re.I)
+
+
 def _merge_into_tracker_session(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel | None:
     """A request from a browser the tracker already knows (its _at_sid
     cookie): add the edge evidence to that session instead of starting a
@@ -154,7 +157,10 @@ def _merge_into_tracker_session(db: DBSession, shop: str, r: EdgeRecord) -> Sess
     s.edge_signals = ",".join(sorted(sig)) or None
     paths = json.loads(s.edge_paths) if s.edge_paths else []
     entry = f"{r.path} → {r.tool}" if r.tool else r.path
-    if entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
+    # The tracker's own background calls (product availability, cart tagging)
+    # aren't something the visitor did: keep any signals, but not the path.
+    own = bool(TRACKER_OWN_PATHS.search((r.path or "").split("?")[0]))
+    if not own and entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
         paths.append(entry)
     s.edge_paths = json.dumps(paths)
     result = classify_model(s)
@@ -199,7 +205,10 @@ def apply_record(db: DBSession, shop: str, r: EdgeRecord) -> SessionModel:
 
     paths = json.loads(s.edge_paths) if s.edge_paths else []
     entry = f"{r.path} → {r.tool}" if r.tool else r.path
-    if entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
+    # The tracker's own background calls (product availability, cart tagging)
+    # aren't something the visitor did: keep any signals, but not the path.
+    own = bool(TRACKER_OWN_PATHS.search((r.path or "").split("?")[0]))
+    if not own and entry not in paths and len(paths) < MAX_PATHS_PER_SESSION:
         paths.append(entry)
     s.edge_paths = json.dumps(paths)
     sig = set(filter(None, (s.edge_signals or "").split(","))) | signals_for(r)
