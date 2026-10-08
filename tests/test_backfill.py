@@ -14,14 +14,14 @@ def test_backfill_and_scan(monkeypatch):
     monkeypatch.setenv("METRICS_API_KEY", "k")
     h = {"Authorization": "Bearer k"}
     orders = [
-        {"id": "gid://shopify/Order/9001", "created_at": "2026-10-01T01:00:00Z", "total": 200,
+        {"id": "gid://shopify/Order/5550001", "created_at": "2026-10-01T01:00:00Z", "total": 200,
          "landing_site": "https://scan-test.myshopify.com/products/x?utm_source=chatgpt.com"},
-        {"id": "9002", "created_at": "2026-10-02T01:00:00Z", "total": 120, "source_name": "web",
+        {"id": "5550002", "created_at": "2026-10-02T01:00:00Z", "total": 120, "source_name": "web",
          "referring_site": "https://www.perplexity.ai/"},
-        {"id": "9003", "created_at": "2026-10-03T01:00:00Z", "total": 80, "source_name": "1234567",
+        {"id": "5550003", "created_at": "2026-10-03T01:00:00Z", "total": 80, "source_name": "1234567",
          "app": "1234567 ChatGPT"},
-        {"id": "9004", "created_at": "2026-10-04T01:00:00Z", "total": 100, "source_name": "web"},
-        {"id": "9005", "created_at": "2026-10-04T02:00:00Z", "total": 999, "test": True,
+        {"id": "5550004", "created_at": "2026-10-04T01:00:00Z", "total": 100, "source_name": "web"},
+        {"id": "5550005", "created_at": "2026-10-04T02:00:00Z", "total": 999, "test": True,
          "referring_site": "https://chatgpt.com/"},
     ]
     with TestClient(app) as client:
@@ -30,7 +30,7 @@ def test_backfill_and_scan(monkeypatch):
         assert r["added"] == 3
         r2 = client.post("/backfill/orders", headers=h,
                          json={"shop": SHOP, "run_id": r["run_id"], "orders": orders[2:], "done": True}).json()
-        assert r2["added"] == 2 and r2["scanned"] == 6  # order 9003 sent twice, stored once
+        assert r2["added"] == 2 and r2["scanned"] == 6  # order 5550003 sent twice, stored once
         st = client.get(f"/backfill/status?shop={SHOP}", headers=h).json()
         assert st["status"] == "done" and st["orders_added"] == 5
 
