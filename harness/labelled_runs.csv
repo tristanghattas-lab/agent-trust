@@ -1,0 +1,2 @@
+date_utc,shop,agent,surface,session_key,order_id,outcome,caught_by,confidence,notes
+2026-10-08T11:07Z,73ee52.myshopify.com,ChatGPT,ChatGPT agent,s_muzfm9wy_22fde5co,7645654876444,ordered $1099 (test),sparse_trail_clicks 6/6 + low_mouse_event_rate,0.7,"Arrived on a utm_source=claude.ai link; no Web Bot Auth signature seen at the edge; 14s before payment = agent-placed; ~70s landing to order"
