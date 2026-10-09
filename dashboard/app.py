@@ -616,6 +616,8 @@ elif page == "Shelf test":
             st.error(f"Couldn't load results: {exc}")
             st.stop()
         st.caption(f"Status: {d['status']}. A run takes a few minutes; reload to see it.")
+        if d.get("progress"):
+            st.caption(f"Progress: {d['progress']}")
         run = d.get("run")
         if run:
             ui.kpi_row([

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 PROFILE_URL = os.getenv("UCP_AGENT_PROFILE",
                         "https://agent-trust-api-o7u9.onrender.com/ucp-agent.json")
-TIMEOUT = 25
+TIMEOUT = 12
 TOP_N = 3
 MAX_AUTO_REQUESTS = 14
 
@@ -96,8 +96,21 @@ WINE_PACK = [
 # ---------------------------------------------------------------------------
 # Catalogue (public storefront endpoints)
 # ---------------------------------------------------------------------------
+# Live progress per store, shown while a run is going (stage, counts, last error).
+PROGRESS: dict[str, dict] = {}
+_current = threading.local()
+
+
+def _note(**kw) -> None:
+    shop = getattr(_current, "shop", None)
+    if shop:
+        PROGRESS.setdefault(shop, {}).update(kw, at=datetime.now(timezone.utc).isoformat())
+
+
 def _get(url: str, **kw):
     r = requests.get(url, timeout=TIMEOUT, headers={"User-Agent": "AgentTrust-ShelfTest/1.0"}, **kw)
+    if r.status_code >= 400:
+        _note(last_error=f"{r.status_code} on {url.split('?')[0][-80:]}")
     r.raise_for_status()
     return r.json()
 
@@ -284,17 +297,25 @@ def run_shelf_test(domain: str, country: str = "AU", currency: str = "AUD") -> d
     """Run every request against the store's agent search. `domain` is the
     store's myshopify or storefront domain."""
     started = datetime.now(timezone.utc)
+    _note(stage="catalogue")
     products = fetch_catalogue(domain)
+    _note(stage="collections", products=len(products))
     collections = fetch_collections(domain)
     handles = [c["handle"] for c in collections]
     pack = {h for r in WINE_PACK for h in r.collections}
     # Members for the wine-pack collections and up to 40 other real ones
     # (each is a few public requests, so keep the run to a couple of minutes).
     others = [h for h in handles if h not in pack and not JUNK_COLLECTION.match(h)][:40]
-    members = {h: fetch_collection_members(domain, h, max_pages=4) for h in [*[h for h in handles if h in pack], *others]}
+    from concurrent.futures import ThreadPoolExecutor
+    targets = [*[h for h in handles if h in pack], *others]
+    _note(stage="collection members", collections=len(collections), member_targets=len(targets))
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        members = dict(zip(targets, pool.map(lambda h: fetch_collection_members(domain, h, max_pages=4), targets)))
     reqs = build_requests(collections, members)
+    _note(stage="agent search", requests=len(reqs), done=0)
     results = []
     for req in reqs:
+        _note(done=len(results))
         try:
             res = ucp_search(domain, req.query, country, currency)
             results.append(score_request(req, res, members))
@@ -336,10 +357,14 @@ def run_and_save(shop: str, domain: str | None = None) -> None:
     if shop in _running:
         return
     _running.add(shop)
+    _current.shop = shop
+    PROGRESS[shop] = {"stage": "starting", "domain": domain or shop}
     try:
         save_run(shop, run_shelf_test(domain or shop))
-    except Exception:  # noqa: BLE001
+        _note(stage="done")
+    except Exception as exc:  # noqa: BLE001
         logger.exception("shelf test failed for %s", shop)
+        _note(stage="failed", last_error=f"{type(exc).__name__}: {str(exc)[:200]}")
     finally:
         _running.discard(shop)
 
@@ -359,11 +384,12 @@ def latest(shop: str, history: int = 12) -> dict:
         rows = (db.query(ShelfRun).filter(ShelfRun.shop_domain == shop)
                 .order_by(ShelfRun.finished_at.desc()).limit(history).all())
         if not rows:
-            return {"shop": shop, "status": "running" if shop in _running else "never", "run": None, "history": []}
+            return {"shop": shop, "status": "running" if shop in _running else "never", "run": None, "history": [],
+                    "progress": PROGRESS.get(shop)}
         last = rows[0]
         fin = last.finished_at if last.finished_at.tzinfo else last.finished_at.replace(tzinfo=timezone.utc)
         return {
-            "shop": shop, "status": "running" if shop in _running else "done",
+            "shop": shop, "status": "running" if shop in _running else "done", "progress": PROGRESS.get(shop),
             "stale": datetime.now(timezone.utc) - fin > timedelta(days=7),
             "run": json.loads(last.result),
             "history": [{"at": (r.finished_at.isoformat()), "score": r.score, "found": r.found,
