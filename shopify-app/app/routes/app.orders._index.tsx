@@ -23,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function Orders() {
   const { orders, filter, total, reachable } = useLoaderData<typeof loader>();
   return (
-    <s-page heading="Orders">
+    <s-page heading="Orders" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">Agent Trust</s-link>
       <s-section padding="none">
         <s-box padding="base">
