@@ -90,7 +90,7 @@ export async function applyTags(graphql: GraphQL, orderId: string, v: OrderVerdi
 export const SCAN_DAYS = 60;
 const SCAN_MAX_ORDERS = 5000;
 
-async function apiCall(path: string, init?: RequestInit) {
+export async function apiCall(path: string, init?: RequestInit) {
   const key = process.env.METRICS_API_KEY;
   if (!key) throw new Error("METRICS_API_KEY not set");
   const r = await fetch(`${API}${path}`, {
@@ -197,4 +197,43 @@ export async function ensureOrderScan(shop: string, makeGraphql: () => Promise<G
     return { status: "running" };
   }
   return st;
+}
+
+
+/** GET a metrics view for a store, or null if the API can't be reached. */
+export async function metricsView<T = any>(view: string, shop: string, params: Record<string, string | number> = {}): Promise<T | null> {
+  const q = new URLSearchParams({ shop, ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) });
+  try {
+    return (await apiCall(`/metrics/${view}?${q}`)) as T;
+  } catch (e) {
+    console.warn("metrics view failed", view, shop, e);
+    return null;
+  }
+}
+
+/** Make sure the checkout pixel is switched on for this store. Returns "on" or an error. */
+export async function ensurePixel(admin: { graphql: GraphQL }, shop: string): Promise<string> {
+  const settings = JSON.stringify({ shop });
+  try {
+    const found = await admin.graphql(`#graphql
+      query { webPixel { id settings } }`);
+    const pixel = (await found.json())?.data?.webPixel;
+    if (pixel?.id) {
+      if (pixel.settings !== settings) {
+        await admin.graphql(`#graphql
+          mutation update($id: ID!, $webPixel: WebPixelInput!) {
+            webPixelUpdate(id: $id, webPixel: $webPixel) { userErrors { message } }
+          }`, { variables: { id: pixel.id, webPixel: { settings } } });
+      }
+      return "on";
+    }
+  } catch {
+    // No pixel yet: the query errors rather than returning null.
+  }
+  const created = await admin.graphql(`#graphql
+    mutation create($webPixel: WebPixelInput!) {
+      webPixelCreate(webPixel: $webPixel) { userErrors { message } webPixel { id } }
+    }`, { variables: { webPixel: { settings } } });
+  const errors = (await created.json())?.data?.webPixelCreate?.userErrors || [];
+  return errors.length ? `error: ${errors[0].message}` : "on";
 }
