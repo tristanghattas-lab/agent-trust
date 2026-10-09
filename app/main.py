@@ -171,6 +171,24 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/ucp-agent.json")
+def ucp_agent_profile():
+    """Agent Trust's UCP agent profile. Shopify's agent API (UCP over MCP)
+    fetches this to identify the caller; we use it for read-only catalog
+    tests ("would an agent find and choose this store's products?")."""
+    return {
+        "ucp": {
+            "version": "2026-08-25",
+            "capabilities": {
+                "dev.ucp.shopping.catalog.search": [{"version": "2026-08-25"}],
+                "dev.ucp.shopping.catalog.lookup": [{"version": "2026-08-25"}],
+                "dev.ucp.shopping.cart": [{"version": "2026-08-25"}],
+                "dev.ucp.shopping.checkout": [{"version": "2026-08-25"}],
+            },
+        }
+    }
+
+
 @app.get("/tracker.js")
 def tracker_js():
     # Served explicitly (not via StaticFiles mount) so the URL is exactly
