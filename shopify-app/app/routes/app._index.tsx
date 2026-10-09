@@ -4,7 +4,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server";
 import {
-  DASHBOARD, ensureOrderScan, ensurePixel, getPlan, metricsView, scanSummary, SCAN_DAYS,
+  DASHBOARD, ensureOrderScan, ensurePixel, getPlan, metricsView, scanSummary, SCAN_DAYS, shelfLatest,
 } from "../agent-trust.server";
 import {
   ActionBadge, ago, DailyBars, HBars, Kpi, KpiGrid, LiveDot, Locked, money, ORIGIN_COLOURS, OriginBadge, pct,
@@ -19,7 +19,7 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const [pixel, overview, scanState, live, channels, opp, plan] = await Promise.all([
+  const [pixel, overview, scanState, live, channels, opp, plan, shelf] = await Promise.all([
     ensurePixel(admin, shop),
     metricsView("overview", shop, { days: 30 }),
     ensureOrderScan(shop, async () => (await unauthenticated.admin(shop)).admin.graphql),
@@ -27,13 +27,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     metricsView("channels", shop, { days: 30 }),
     metricsView("opportunities", shop, { days: 30 }),
     getPlan(shop),
+    shelfLatest(shop),
   ]);
   const scan = scanState.status === "done" ? await scanSummary(shop).catch(() => null) : null;
   const embedLink =
     `https://${shop}/admin/themes/current/editor?context=apps&template=index` +
     `&activateAppId=${process.env.SHOPIFY_API_KEY}/tracker`;
   return {
-    shop, pixel, overview, live, channels: channels?.channels ?? [], opp, plan, scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
+    shop, pixel, overview, live, channels: channels?.channels ?? [], opp, plan, shelf, scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
     dashboard: `${DASHBOARD}/?shop=${shop}`,
   };
 };
@@ -47,7 +48,7 @@ const SEVERITY: Record<string, { tone: "critical" | "warning" | "info"; label: s
 };
 
 export default function Home() {
-  const { overview, live: liveInitial, channels, opp, plan, scan, scanStatus, scanDays, pixel, embedLink, dashboard } =
+  const { overview, live: liveInitial, channels, opp, plan, shelf, scan, scanStatus, scanDays, pixel, embedLink, dashboard } =
     useLoaderData<typeof loader>();
   const has = (f: string) => plan.features.includes(f);
   const items: any[] = opp?.items ?? [];
@@ -101,6 +102,48 @@ export default function Home() {
           Looking for orders that came from ChatGPT, Perplexity, Copilot and other AI. Reload in a minute.
         </s-banner>
       )}
+
+      <s-section heading="Can AI agents find your products?">
+        {shelf?.run ? (
+          <s-stack direction="block" gap="base">
+            <s-stack direction="inline" gap="base" alignItems="center">
+              <span style={{ fontSize: 34, fontWeight: 650, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>
+                {shelf.run.score}<span style={{ fontSize: 16, color: "#6d7175", fontWeight: 500 }}> / 100</span>
+              </span>
+              <s-text color="subdued">
+                {shelf.run.found} found · {shelf.run.partial} partial · {shelf.run.missed} missed, from {shelf.run.scored} shopper
+                requests sent to your store's agent search
+              </s-text>
+            </s-stack>
+            {shelf.run.results.filter((r: any) => r.verdict === "missed" || r.verdict === "partial").slice(0, 4).map((r: any) => (
+              <s-box key={r.id} padding="small" border="base" borderRadius="base">
+                <s-stack direction="block" gap="small-300">
+                  <s-stack direction="inline" gap="small" alignItems="center">
+                    <s-badge tone={r.verdict === "missed" ? "critical" : "warning"}>{r.verdict === "missed" ? "Missed" : "Partial"}</s-badge>
+                    <s-text type="strong">"{r.query}"</s-text>
+                  </s-stack>
+                  {(r.missed_products || []).length > 0 ? (
+                    <s-text color="subdued">
+                      In stock but not shown: {r.missed_products.slice(0, 3).map((m: any) => `${m.title} (${money(m.price, 2)})`).join(", ")}
+                    </s-text>
+                  ) : r.unmet?.length ? (
+                    <s-text color="subdued">{r.unmet.join("; ")}</s-text>
+                  ) : null}
+                </s-stack>
+              </s-box>
+            ))}
+            <s-stack direction="inline" gap="small">
+              <s-button variant="primary" href="/app/fixes">See fixes</s-button>
+              <s-button href="/app/shelf">All requests</s-button>
+            </s-stack>
+          </s-stack>
+        ) : (
+          <s-text color="subdued">
+            Testing your store now: we send realistic shopper requests to your store's agent search (the one ChatGPT and
+            other agents use) and check what comes back. Reload in a few minutes.
+          </s-text>
+        )}
+      </s-section>
 
       <s-section heading="Agent sales left on the table, last 30 days">
         {items.length ? (

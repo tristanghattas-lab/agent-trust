@@ -266,3 +266,101 @@ export async function getPlan(shop: string): Promise<Plan> {
 export async function changePlan(shop: string, body: { plan?: string; start_trial?: boolean }): Promise<Plan> {
   return (await apiCall("/plans", { method: "POST", body: JSON.stringify({ shop, ...body }) })) as Plan;
 }
+
+// ---------------------------------------------------------------------------
+// Agent shelf test (API runs it; see app/shelf.py)
+// ---------------------------------------------------------------------------
+export const shelfLatest = (shop: string) =>
+  apiCall(`/shelf?shop=${encodeURIComponent(shop)}`).catch(() => null);
+
+export const shelfStart = (shop: string) =>
+  apiCall("/shelf/run", { method: "POST", body: JSON.stringify({ shop }) });
+
+// ---------------------------------------------------------------------------
+// Fix queue: product types from the store's own collections
+// ---------------------------------------------------------------------------
+// First matching collection handle decides the type.
+const TYPE_RULES: [RegExp, string][] = [
+  [/^(non-alcohol|non-alcoholic|alcohol-free)$/, "Non-Alcoholic Wine"],
+  [/^(champagne|sparkling|prosecco|cava)$/, "Sparkling Wine"],
+  [/^(rose-wine|rose)$/, "Rosé"],
+  [/^(fortified|port|sherry)$/, "Fortified Wine"],
+  [/^(dessert|sweet-wine|sauternes)$/, "Dessert Wine"],
+  [/^(red-wine|shiraz|pinot-noir|cabernet-sauvignon|cabernet-blends|merlot|grenache|nebbiolo|sangiovese|tempranillo)$/, "Red Wine"],
+  [/^(white-wine|chardonnay|riesling|sauvignon-blanc|pinot-gris|semillon|chenin-blanc)$/, "White Wine"],
+  [/^(whisky|whiskey|gin|rum|vodka|tequila|brandy|cognac|spirits|liqueur)$/, "Spirits"],
+  [/^(accessories|riedel|glassware|gifts-accessories)$/, "Accessories"],
+];
+
+export type TypeProposal = { id: string; title: string; proposed: string; via: string };
+
+/**
+ * Products with no product type, and the type their collection suggests
+ * (rosé collection -> "Rosé"). Walks the matching collections only, so it
+ * stays fast on big catalogues. First matching rule wins.
+ */
+export async function untypedProducts(graphql: GraphQL): Promise<TypeProposal[]> {
+  const colRes = await graphql(`#graphql
+    query cols { collections(first: 250) { nodes { handle } } }`);
+  const handles: string[] = ((await colRes.json())?.data?.collections?.nodes ?? []).map((c: any) => c.handle);
+  const seen = new Set<string>();
+  const out: TypeProposal[] = [];
+  for (const [re, type] of TYPE_RULES) {
+    for (const handle of handles.filter((h) => re.test(h))) {
+      let after: string | null = null;
+      for (let i = 0; i < 8; i++) {
+        const res = await graphql(`#graphql
+          query members($handle: String!, $after: String) {
+            collectionByIdentifier(identifier: { handle: $handle }) {
+              products(first: 250, after: $after) { pageInfo { hasNextPage endCursor } nodes { id title productType } }
+            }
+          }`, { variables: { handle, after } });
+        const page: any = (await res.json())?.data?.collectionByIdentifier?.products;
+        if (!page) break;
+        for (const n of page.nodes) {
+          if (seen.has(n.id)) continue;
+          seen.add(n.id);
+          if (!(n.productType || "").trim()) out.push({ id: n.id, title: n.title, proposed: type, via: handle });
+        }
+        if (!page.pageInfo.hasNextPage) break;
+        after = page.pageInfo.endCursor;
+      }
+    }
+  }
+  return out;
+}
+
+/** Set product types, a batch at a time. Returns how many were updated. */
+export async function applyTypes(graphql: GraphQL, items: { id: string; type: string }[]): Promise<{ done: number; errors: string[] }> {
+  let done = 0;
+  const errors: string[] = [];
+  for (const it of items) {
+    const r = await graphql(`#graphql
+      mutation setType($product: ProductUpdateInput!) {
+        productUpdate(product: $product) { userErrors { message } }
+      }`, { variables: { product: { id: it.id, productType: it.type } } });
+    const errs = (await r.json())?.data?.productUpdate?.userErrors ?? [];
+    if (errs.length) errors.push(`${it.id}: ${errs[0].message}`);
+    else done++;
+  }
+  return { done, errors };
+}
+
+/** Metafields that look like critic scores or cellaring advice, from a sample of products. */
+export async function scoreFields(graphql: GraphQL): Promise<{ key: string; examples: string[]; products: number }[]> {
+  const res = await graphql(`#graphql
+    query sample { products(first: 60, sortKey: UPDATED_AT, reverse: true) {
+      nodes { title metafields(first: 40) { nodes { namespace key value } } } } }`);
+  const nodes: any[] = (await res.json())?.data?.products?.nodes ?? [];
+  const found: Record<string, { examples: string[]; products: number }> = {};
+  for (const p of nodes) {
+    for (const m of p.metafields.nodes) {
+      const k = `${m.namespace}.${m.key}`;
+      if (!/score|point|critic|rating|review|cellar|drink|window|aging|ageing/i.test(k)) continue;
+      const f = (found[k] ??= { examples: [], products: 0 });
+      f.products++;
+      if (f.examples.length < 3) f.examples.push(`${p.title}: ${String(m.value).slice(0, 120)}`);
+    }
+  }
+  return Object.entries(found).map(([key, v]) => ({ key, ...v })).sort((a, b) => b.products - a.products);
+}
