@@ -332,3 +332,20 @@ class ShopPlan(Base):
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     trial_used: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ShelfRun(Base):
+    """One agent shelf test: shopper requests sent to the store's agent
+    search, scored found / partial / missed. The full result is JSON."""
+
+    __tablename__ = "shelf_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String, index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    found: Mapped[int] = mapped_column(Integer, default=0)
+    partial: Mapped[int] = mapped_column(Integer, default=0)
+    missed: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str] = mapped_column(Text)

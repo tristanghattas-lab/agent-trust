@@ -107,3 +107,41 @@ def backfill_status(shop: str = Query(...), db: DBSession = Depends(get_db)):
             "started_at": run.started_at, "finished_at": run.finished_at,
             "orders_scanned": run.orders_scanned, "orders_added": run.orders_added,
             "oldest_order_at": run.oldest_order_at}
+
+
+
+# ---------------------------------------------------------------------------
+# Agent shelf test (app/shelf.py): start a run, read the latest
+# ---------------------------------------------------------------------------
+shelf_router = APIRouter(prefix="/shelf", tags=["shelf"])
+
+
+class ShelfStart(BaseModel):
+    shop: str
+    domain: str | None = None
+
+
+@shelf_router.post("/run", dependencies=[Depends(require_key)])
+def shelf_run(body: ShelfStart):
+    from app import shelf
+    shop = normalise_shop(body.shop)
+    if not shop:
+        raise HTTPException(status_code=400, detail="invalid shop")
+    domain = (body.domain or shop).strip().lower().removeprefix("https://").removeprefix("http://").split("/")[0]
+    started = shelf.start_in_background(shop, domain)
+    return {"shop": shop, "started": started, "status": "running"}
+
+
+@shelf_router.get("", dependencies=[Depends(require_key)])
+def shelf_latest(shop: str = Query(...), auto: bool = True):
+    """Latest run and score history. With auto, a store never tested, or last
+    tested over a week ago, gets a new run in the background."""
+    from app import shelf
+    norm = normalise_shop(shop)
+    if not norm:
+        raise HTTPException(status_code=400, detail="invalid shop")
+    out = shelf.latest(norm)
+    if auto and (out["status"] == "never" or out.get("stale")):
+        if shelf.start_in_background(norm):
+            out["status"] = "running"
+    return out
