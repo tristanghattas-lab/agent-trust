@@ -50,12 +50,11 @@ export function Kpi({ label, value, note, tone }: { label: string; value: string
 }
 
 export function KpiGrid({ children }: { children: ReactNode }) {
+  // Plain CSS grid: as many cards per row as fit (4 on a normal admin width).
   return (
-    <s-query-container>
-      <s-grid gridTemplateColumns="@container (inline-size > 640px) 1fr 1fr 1fr 1fr, 1fr 1fr" gap="base">
-        {children}
-      </s-grid>
-    </s-query-container>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+      {children}
+    </div>
   );
 }
 

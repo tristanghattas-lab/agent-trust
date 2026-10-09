@@ -54,7 +54,7 @@ export default function Home() {
   const review = ao.needs_review ?? 0;
 
   return (
-    <s-page heading="Agent Trust" inlineSize="large">
+    <s-page heading="Agent Trust">
       <s-button slot="primary-action" href="/app/orders">View orders</s-button>
       <s-button slot="secondary-actions" href={dashboard} target="_blank">Full dashboard</s-button>
 
@@ -83,7 +83,9 @@ export default function Home() {
       <s-section heading="Last 30 days">
         <KpiGrid>
           <Kpi label="Revenue from AI" value={money(ao.ai_revenue ?? 0)}
-            note={`${ao.ai_orders ?? 0} orders${ao.ai_revenue_share != null ? ` · ${pct(ao.ai_revenue_share)} of revenue` : ""}${ao.ai_test_orders ? ` · ${ao.ai_test_orders} test` : ""}`} />
+            note={ao.ai_orders && ao.ai_test_orders === ao.ai_orders
+              ? `${ao.ai_orders} test order${ao.ai_orders === 1 ? "" : "s"}, not counted`
+              : `${ao.ai_orders ?? 0} orders${ao.ai_revenue_share != null ? ` · ${pct(ao.ai_revenue_share)} of revenue` : ""}${ao.ai_test_orders ? ` (${ao.ai_test_orders} test not counted)` : ""}`} />
           <Kpi label="Agent orders" value={String(ao.agent_orders ?? 0)}
             note={`${money(ao.agent_revenue ?? 0)} placed or assisted by agents`} />
           <Kpi label="Agent conversion" value={pct(ao.agent_conversion, 2)}

@@ -19,7 +19,7 @@ export default function Products() {
   const pp = d?.agent_behaviour?.people;
   const products: any[] = d?.products ?? [];
   return (
-    <s-page heading="How agents shop your store" inlineSize="large">
+    <s-page heading="How agents shop your store">
       <s-link slot="breadcrumb-actions" href="/app">Agent Trust</s-link>
       {!ag ? (
         <s-section>

@@ -42,7 +42,7 @@ export default function OrderDetail() {
     ["Evidence", o.evidence_score],
   ];
   return (
-    <s-page heading={`Order #${o.shopify_order_id}`} inlineSize="large">
+    <s-page heading={`Order #${o.shopify_order_id}`}>
       <s-link slot="breadcrumb-actions" href="/app/orders">Orders</s-link>
       <s-button slot="secondary-actions" href={`shopify://admin/orders/${o.shopify_order_id}`}>Open in Shopify</s-button>
 
