@@ -177,14 +177,20 @@ def ucp_agent_profile():
     fetches this to identify the caller; we use it for read-only catalog
     tests ("would an agent find and choose this store's products?")."""
     from fastapi.responses import JSONResponse
+    v = "2026-08-25"
+    cap = lambda **kw: [{"version": v, **kw}]  # noqa: E731
     return JSONResponse(headers={"Cache-Control": "public, max-age=3600"}, content={
         "ucp": {
-            "version": "2026-08-25",
+            "version": v,
+            "services": {"dev.ucp.shopping": [{
+                "version": v, "spec": f"https://ucp.dev/{v}/specification/overview/", "transport": "mcp",
+                "schema": f"https://ucp.dev/{v}/services/shopping/mcp.openrpc.json"}]},
             "capabilities": {
-                "dev.ucp.shopping.catalog.search": [{"version": "2026-08-25"}],
-                "dev.ucp.shopping.catalog.lookup": [{"version": "2026-08-25"}],
-                "dev.ucp.shopping.cart": [{"version": "2026-08-25"}],
-                "dev.ucp.shopping.checkout": [{"version": "2026-08-25"}],
+                "dev.ucp.shopping.catalog.search": cap(),
+                "dev.ucp.shopping.catalog.lookup": cap(),
+                "dev.shopify.catalog": cap(extends=["dev.ucp.shopping.catalog.search", "dev.ucp.shopping.catalog.lookup"]),
+                "dev.ucp.shopping.cart": cap(),
+                "dev.ucp.shopping.checkout": cap(),
             },
         }
     })
