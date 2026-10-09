@@ -52,7 +52,7 @@ export function Kpi({ label, value, note, tone }: { label: string; value: string
 export function KpiGrid({ children }: { children: ReactNode }) {
   return (
     <s-query-container>
-      <s-grid gridTemplateColumns="@container (inline-size > 640px) repeat(4, 1fr), repeat(2, 1fr)" gap="base">
+      <s-grid gridTemplateColumns="@container (inline-size > 640px) 1fr 1fr 1fr 1fr, 1fr 1fr" gap="base">
         {children}
       </s-grid>
     </s-query-container>
