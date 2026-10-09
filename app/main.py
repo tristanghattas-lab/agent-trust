@@ -192,7 +192,13 @@ def ucp_agent_profile():
                 "dev.ucp.shopping.cart": cap(),
                 "dev.ucp.shopping.checkout": cap(),
             },
-        }
+            # Read-only tests never pay; declared because the profile format requires it.
+            "payment_handlers": {"dev.shopify.card": [{
+                "id": "shopify.card", "version": "2026-01-15",
+                "spec": "https://ucp.dev/specification/payment-handler-guide",
+                "schema": "https://shopify.dev/ucp/card-payment-handler/2026-01-15/config.json"}]},
+        },
+        "signing_keys": [],
     })
 
 
