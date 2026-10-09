@@ -176,7 +176,8 @@ def ucp_agent_profile():
     """Agent Trust's UCP agent profile. Shopify's agent API (UCP over MCP)
     fetches this to identify the caller; we use it for read-only catalog
     tests ("would an agent find and choose this store's products?")."""
-    return {
+    from fastapi.responses import JSONResponse
+    return JSONResponse(headers={"Cache-Control": "public, max-age=3600"}, content={
         "ucp": {
             "version": "2026-08-25",
             "capabilities": {
@@ -186,7 +187,7 @@ def ucp_agent_profile():
                 "dev.ucp.shopping.checkout": [{"version": "2026-08-25"}],
             },
         }
-    }
+    })
 
 
 @app.get("/tracker.js")
