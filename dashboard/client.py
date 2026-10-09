@@ -186,3 +186,26 @@ def refresh_in_background(shop: str) -> None:
     import threading
     from app.cloudflare import sync_if_stale
     threading.Thread(target=sync_if_stale, args=(shop,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Agent shelf test (Shelf test page)
+# ---------------------------------------------------------------------------
+def shelf_start(shop: str, domain: str | None = None) -> dict:
+    if API_URL and API_KEY:
+        r = requests.post(f"{API_URL}/shelf/run", headers={"Authorization": f"Bearer {API_KEY}"},
+                          json={"shop": shop, "domain": domain}, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    from app import shelf
+    return {"started": shelf.start_in_background(shop, domain), "status": "running"}
+
+
+def shelf_latest(shop: str) -> dict:
+    if API_URL and API_KEY:
+        r = requests.get(f"{API_URL}/shelf", headers={"Authorization": f"Bearer {API_KEY}"},
+                         params={"shop": shop, "auto": "false"}, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    from app import shelf
+    return shelf.latest(shop)

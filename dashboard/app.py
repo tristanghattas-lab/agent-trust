@@ -31,8 +31,8 @@ st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
 ui.inject_css()
 
-PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Products", "Threat testing", "Run report",
-         "Connections"]
+PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Products", "Shelf test", "Threat testing",
+         "Run report", "Connections"]
 # Deep links: ?view=report&minutes=30&shop=<store> opens the run report directly.
 _qp = st.query_params
 if _qp.get("view") == "report" and "nav" not in st.session_state:
@@ -596,6 +596,49 @@ elif page == "Products":
             "": label, "Agents": "—" if ag.get(k) is None else f(ag[k]),
             "People": "—" if not pp or pp.get(k) is None else f(pp[k])} for label, k, f in rows]),
             hide_index=True, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Shelf test: would an agent find this store's products? (app/shelf.py)
+# ---------------------------------------------------------------------------
+elif page == "Shelf test":
+    ui.page_header("Agent shelf test", "Shopper requests sent to a store's own agent search", demo=False,
+                   live_label="READ-ONLY")
+    c1, c2, c3 = st.columns([2, 2, 1])
+    target = c1.text_input("Store (myshopify domain)", value="" if shop == DEMO_SHOP else shop,
+                           placeholder="ccce8a-87.myshopify.com")
+    domain = c2.text_input("Storefront domain (optional)", placeholder="unitedcellars.com.au")
+    if c3.button("Run test", type="primary", use_container_width=True) and target:
+        st.toast(str(client.shelf_start(target.strip(), domain.strip() or None)))
+    if target:
+        try:
+            d = client.shelf_latest(target.strip())
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Couldn't load results: {exc}")
+            st.stop()
+        st.caption(f"Status: {d['status']}. A run takes a few minutes; reload to see it.")
+        run = d.get("run")
+        if run:
+            ui.kpi_row([
+                ui.kpi("Shelf score", f"{run['score']}", f"{run['found']} found · {run['partial']} partial · "
+                       f"{run['missed']} missed of {run['scored']}"),
+                ui.kpi("Products", f"{run['health']['products']:,}", f"{run['health']['in_stock']:,} in stock"),
+                ui.kpi("No product type", pct(run["health"]["no_product_type_share"], 0),
+                       f"{run['health']['no_product_type']:,} products"),
+                ui.kpi("Scores agents can read", f"{run['health']['scores_in_description']:,}",
+                       "products with a critic score in the description"),
+            ])
+            st.write("")
+            with st.container(border=True):
+                ui.card_title("Requests", "Misses first. Missed products: in stock, would have suited, didn't come back.")
+                st.dataframe(pd.DataFrame([{
+                    "Request": r["query"], "Result": r["verdict"], "Source": r["source"],
+                    "Top results": " · ".join(f"{t['title']} ${t['price']}" + ("" if t.get("suits") else " ✗")
+                                              for t in r.get("top", [])),
+                    "Missed in stock": " · ".join(f"{m['title']} ${m['price']}" for m in r.get("missed_products", [])),
+                    "Why": "; ".join(r.get("unmet") or []) or r.get("error", "")} for r in run["results"]]),
+                    hide_index=True, use_container_width=True, height=520)
+            with st.expander("Catalogue health (raw)"):
+                st.json(run["health"])
 
 # ---------------------------------------------------------------------------
 # Threat testing
