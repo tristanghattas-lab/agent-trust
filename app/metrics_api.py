@@ -10,6 +10,9 @@ Metrics endpoints: one per view, scoped to a store.
     GET /metrics/orders/{order_id}?shop=...           (one order's evidence chain)
     GET /metrics/products?shop=...&days=...           (products and agent behaviour)
     GET /metrics/scan?shop=...&days=60                (AI orders in recent order history)
+    GET /metrics/behaviour?shop=...&days=...          (behaviour map, agent paths, journeys)
+    GET /metrics/live?shop=...&minutes=30             (on the store right now)
+    GET /metrics/channels?shop=...&days=...           (revenue by source)
     GET /metrics/threats?shop=...
 
 shop=demo serves the synthetic dataset, so a front end can be built before a
@@ -126,6 +129,27 @@ def get_scan(shop: str = Depends(resolve_shop), days: int = Query(60, ge=1, le=3
     """AI orders and revenue across the store's recent orders, including
     past orders scanned when the Shopify app was installed."""
     return metrics.scan(metrics.load_frames(engine, shop, days))
+
+
+@router.get("/behaviour", dependencies=deps)
+def get_behaviour(shop: str = Depends(resolve_shop), days: int = Days):
+    """Behaviour map (every visit placed by how it behaved), agent paths and
+    recent agent journeys."""
+    f = metrics.load_frames(engine, shop, days)
+    return {**metrics.behaviour_map(f), **{k: v for k, v in metrics.agent_journeys(f).items()
+                                          if k in ("paths", "recent", "agent_visits")}}
+
+
+@router.get("/live", dependencies=deps)
+def get_live(shop: str = Depends(resolve_shop), minutes: int = Query(30, ge=5, le=240)):
+    """Visits active in the last N minutes and their latest steps."""
+    return metrics.live(metrics.load_frames(engine, shop, 1), minutes)
+
+
+@router.get("/channels", dependencies=deps)
+def get_channels(shop: str = Depends(resolve_shop), days: int = Days):
+    """Visitors, orders and revenue per source, agents and AI assistants included."""
+    return metrics.channels(metrics.load_frames(engine, shop, days))
 
 
 @router.get("/products", dependencies=deps)

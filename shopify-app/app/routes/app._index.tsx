@@ -1,12 +1,13 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { useEffect } from "react";
+import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server";
 import {
   DASHBOARD, ensureOrderScan, ensurePixel, metricsView, scanSummary, SCAN_DAYS,
 } from "../agent-trust.server";
 import {
-  ActionBadge, DailyBars, HBars, Kpi, KpiGrid, money, ORIGIN_COLOURS, OriginBadge, pct, when,
+  ActionBadge, ago, DailyBars, HBars, Kpi, KpiGrid, LiveDot, money, ORIGIN_COLOURS, OriginBadge, pct, VisitsChart, when,
 } from "../components/ui";
 
 /**
@@ -17,17 +18,19 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const [pixel, overview, scanState] = await Promise.all([
+  const [pixel, overview, scanState, live, channels] = await Promise.all([
     ensurePixel(admin, shop),
     metricsView("overview", shop, { days: 30 }),
     ensureOrderScan(shop, async () => (await unauthenticated.admin(shop)).admin.graphql),
+    metricsView("live", shop, { minutes: 30 }),
+    metricsView("channels", shop, { days: 30 }),
   ]);
   const scan = scanState.status === "done" ? await scanSummary(shop).catch(() => null) : null;
   const embedLink =
     `https://${shop}/admin/themes/current/editor?context=apps&template=index` +
     `&activateAppId=${process.env.SHOPIFY_API_KEY}/tracker`;
   return {
-    shop, pixel, overview, scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
+    shop, pixel, overview, live, channels: channels?.channels ?? [], scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
     dashboard: `${DASHBOARD}/?shop=${shop}`,
   };
 };
@@ -41,7 +44,19 @@ const SEVERITY: Record<string, { tone: "critical" | "warning" | "info"; label: s
 };
 
 export default function Home() {
-  const { overview, scan, scanStatus, scanDays, pixel, embedLink, dashboard } = useLoaderData<typeof loader>();
+  const { overview, live: liveInitial, channels, scan, scanStatus, scanDays, pixel, embedLink, dashboard } =
+    useLoaderData<typeof loader>();
+  // Live strip: refresh every 20 seconds without reloading the page.
+  const fetcher = useFetcher<any>();
+  useEffect(() => {
+    const t = setInterval(() => { if (fetcher.state === "idle") fetcher.load("/app/live"); }, 20000);
+    return () => clearInterval(t);
+  }, [fetcher]);
+  const live: any = fetcher.data ?? liveInitial ?? { visitors: 0, agents: 0, people: 0, feed: [] };
+  const visitDays = (overview?.daily ?? []).map((d: any) => ({
+    date: d.date, ai: d.ai_referred || 0, people: Math.max(0, (d.human || 0) - (d.ai_referred || 0)),
+    agents: (d.assistant || 0) + (d.automation || 0),
+  }));
   const ao = overview?.ai_orders ?? {};
   const k = overview?.kpis ?? null;
   const sources: Record<string, boolean> = Object.fromEntries(
@@ -80,6 +95,27 @@ export default function Home() {
         </s-banner>
       )}
 
+      <s-section>
+        <s-stack direction="block" gap="small">
+          <s-stack direction="inline" gap="small" alignItems="center">
+            <LiveDot />
+            <s-text type="strong">
+              {live.visitors} on your store now
+            </s-text>
+            <s-text color="subdued">
+              · {live.agents} agent{live.agents === 1 ? "" : "s"} · {live.people} {live.people === 1 ? "person" : "people"} · last 30 minutes
+            </s-text>
+          </s-stack>
+          {(live.feed ?? []).slice(0, 5).map((e: any, i: number) => (
+            <s-stack key={i} direction="inline" gap="small" alignItems="center">
+              <s-badge tone={e.is_agent ? "warning" : "neutral"}>{e.is_agent ? e.who : "Visitor"}</s-badge>
+              <s-text>{e.text}</s-text>
+              <s-text color="subdued">{ago(e.seconds_ago)}</s-text>
+            </s-stack>
+          ))}
+        </s-stack>
+      </s-section>
+
       <s-section heading="Last 30 days">
         <KpiGrid>
           <Kpi label="Revenue from AI" value={money(ao.ai_revenue ?? 0)}
@@ -113,6 +149,47 @@ export default function Home() {
           </s-stack>
         ) : (
           <s-text color="subdued">Nothing needs you right now.</s-text>
+        )}
+      </s-section>
+
+      <s-section heading="Visits">
+        {visitDays.some((d: any) => d.people + d.ai + d.agents > 0) ? (
+          <VisitsChart days={visitDays} />
+        ) : (
+          <s-text color="subdued">No visits recorded in the last 30 days.</s-text>
+        )}
+      </s-section>
+
+      <s-section heading="Revenue by source" padding="none">
+        {channels.length ? (
+          <s-table>
+            <s-table-header-row>
+              <s-table-header listSlot="primary">Source</s-table-header>
+              <s-table-header format="numeric">Visitors</s-table-header>
+              <s-table-header format="numeric">Conversion</s-table-header>
+              <s-table-header format="currency">Revenue</s-table-header>
+              <s-table-header format="currency">Per visitor</s-table-header>
+            </s-table-header-row>
+            <s-table-body>
+              {channels.slice(0, 10).map((c: any) => (
+                <s-table-row key={c.channel}>
+                  <s-table-cell>
+                    <s-stack direction="inline" gap="small-200" alignItems="center">
+                      <s-text>{c.channel}</s-text>
+                      {c.kind === "agent" && <s-badge tone="warning">Agent</s-badge>}
+                      {c.kind === "ai" && <s-badge tone="info">AI</s-badge>}
+                    </s-stack>
+                  </s-table-cell>
+                  <s-table-cell>{c.visitors ? c.visitors.toLocaleString() : "—"}</s-table-cell>
+                  <s-table-cell>{c.visitors ? pct(c.conversion, 1) : "—"}</s-table-cell>
+                  <s-table-cell>{money(c.revenue)}</s-table-cell>
+                  <s-table-cell>{c.revenue_per_visitor != null ? money(c.revenue_per_visitor, 2) : "—"}</s-table-cell>
+                </s-table-row>
+              ))}
+            </s-table-body>
+          </s-table>
+        ) : (
+          <s-box padding="base"><s-text color="subdued">No visits recorded yet.</s-text></s-box>
         )}
       </s-section>
 
@@ -173,6 +250,7 @@ export default function Home() {
           <s-stack direction="block" gap="small-300">
             <s-text>{k.sessions.toLocaleString()} visits, {k.agent_sessions.toLocaleString()} from agents ({pct(k.agent_share)})</s-text>
             <s-text color="subdued">{k.ai_referred_visits.toLocaleString()} people sent by AI assistants</s-text>
+            <s-link href="/app/behaviour">See the behaviour map</s-link>
             <s-link href="/app/products">How agents shop your store</s-link>
           </s-stack>
         ) : (

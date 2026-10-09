@@ -157,6 +157,8 @@ def _demo_journey(s: pd.DataFrame, max_sessions: int = 600) -> pd.DataFrame:
     handles = sorted({p.split("/products/")[1].split("?")[0] for p in paths if "/products/" in p}) or ["product"]
     ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
     hu = s[s["traffic_class"] == HUMAN]
+    if "click_count" in hu:  # people with pointer data, so the behaviour map has full rows
+        hu = hu[hu["click_count"].notna()]
     half = max_sessions // 2
     # Agents that ordered or carted first, so the sessions the dashboard leads with have a journey.
     ag = ag.assign(_r=ag["st_ordered"].astype(int) * 2 + ag["st_cart"].astype(int)).sort_values("_r", ascending=False)
@@ -763,7 +765,7 @@ def run_report(f: Frames, since: datetime, until: datetime, include_bots: bool =
         carts_with_session = set(ev.loc[ev["session_key"].notna() & ev["cart_token"].notna(), "cart_token"])
         linked = _cart_sessions(f)
         carts_with_session |= set(linked)
-        filled = set(ev.loc[(ev["source"] == "webhook") & (ev["item_count"].fillna(0) > 0), "cart_token"].dropna())
+        filled = set(ev.loc[(ev["source"] == "webhook") & (pd.to_numeric(ev["item_count"], errors="coerce").fillna(0) > 0), "cart_token"].dropna())
         for r in w.sort_values("occurred_at").itertuples():
             storefront = bool(r.session_key) or (r.cart_token in carts_with_session)
             commerce.append({"topic": r.topic, "occurred_at": _iso(r.occurred_at),
@@ -1092,7 +1094,7 @@ def _offsite_carts(f: Frames) -> tuple[int, int]:
     with_session |= set(_cart_sessions(f))
     # A cart only counts once it has items: the tracker's own cart tagging
     # creates an empty cart on every visit.
-    filled = set(ev.loc[(ev["source"] == "webhook") & (ev["item_count"].fillna(0) > 0), "cart_token"].dropna())
+    filled = set(ev.loc[(ev["source"] == "webhook") & (pd.to_numeric(ev["item_count"], errors="coerce").fillna(0) > 0), "cart_token"].dropna())
     carts = ev[(ev["source"] == "webhook") & (ev["topic"] == "carts/create")]
     off = carts[carts["session_key"].isna() & ~carts["cart_token"].isin(with_session)
                 & carts["cart_token"].isin(filled)]
@@ -1387,6 +1389,282 @@ def scan(f: Frames) -> dict:
         by_source=sorted(({**b, "revenue": _num(b["revenue"], 2)} for b in by.values()),
                          key=lambda b: b["revenue"] or 0, reverse=True),
     )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Behaviour map, live view, channels and agent paths
+# ---------------------------------------------------------------------------
+MAP_FEATURES = ["no_trail_share", "mouse_rate", "keyless_share", "automation_tells", "seconds_on_page",
+                "scroll_depth", "hidden_share", "steps_per_minute"]
+MAP_MAX_POINTS = 1500
+
+
+def _session_behaviour(f: Frames, s: pd.DataFrame) -> pd.DataFrame:
+    """Per-visit behaviour features (one row per session), NaN where unmeasured."""
+    import numpy as np
+
+    out = pd.DataFrame(index=s["session_key"])
+    clicks = pd.to_numeric(s["click_count"], errors="coerce").to_numpy() if "click_count" in s else np.full(len(s), np.nan)
+    sparse = pd.to_numeric(s.get("sparse_trail_click_count"), errors="coerce").to_numpy() if "sparse_trail_click_count" in s else np.full(len(s), np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out["no_trail_share"] = np.where(clicks >= 2, sparse / clicks, np.nan)
+    out["mouse_rate"] = np.log1p(pd.to_numeric(s.get("mouse_event_rate"), errors="coerce").to_numpy()) if "mouse_event_rate" in s else np.nan
+    inputs = pd.to_numeric(s.get("input_count"), errors="coerce").to_numpy() if "input_count" in s else np.full(len(s), np.nan)
+    keyless = pd.to_numeric(s.get("keyless_input_count"), errors="coerce").to_numpy() if "keyless_input_count" in s else np.full(len(s), np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out["keyless_share"] = np.where(inputs >= 1, keyless / inputs, np.nan)
+    out["automation_tells"] = (s["automation_tells"].fillna("").map(lambda v: len([x for x in str(v).split(",") if x]))
+                               .to_numpy() if "automation_tells" in s else 0)
+    j = f.journey
+    for col in ("seconds_on_page", "scroll_depth", "hidden_share", "steps_per_minute"):
+        out[col] = np.nan
+    if j is not None and not j.empty:
+        jj = j[j["session_key"].isin(out.index)]
+        leaves = jj[jj["kind"] == "leave"].copy()
+        if not leaves.empty:
+            leaves["dwell"] = pd.to_numeric(leaves["dwell_ms"], errors="coerce") / 1000
+            leaves["hid"] = pd.to_numeric(leaves["hidden_ms"], errors="coerce").fillna(0) / 1000
+            g = leaves.groupby("session_key")
+            out.loc[g.size().index, "seconds_on_page"] = np.log1p(g["dwell"].mean())
+            out.loc[g.size().index, "scroll_depth"] = g["scroll_pct"].apply(lambda x: pd.to_numeric(x, errors="coerce").mean()) / 100
+            tot = g["dwell"].sum().replace(0, np.nan)
+            out.loc[g.size().index, "hidden_share"] = (g["hid"].sum() / tot).clip(0, 1)
+        acts = jj[jj["kind"] != "leave"]
+        if not acts.empty:
+            g2 = acts.groupby("session_key")["occurred_at"]
+            span = (g2.max() - g2.min()).dt.total_seconds() / 60
+            n = g2.size()
+            spm = (n / span.where(span > 0.05)).clip(upper=120)
+            out.loc[spm.index, "steps_per_minute"] = np.log1p(spm)
+    return out
+
+
+def behaviour_map(f: Frames) -> dict:
+    """Every browser visit as a point, placed by how it behaved (pointer,
+    typing, pace, reading): visits that behave alike sit together, so agents
+    separate from people without anyone labelling them. A 2-D projection
+    (PCA) of standardised behaviour features."""
+    import numpy as np
+
+    out = _meta(f)
+    s = f.sessions
+    if s.empty:
+        out.update(points=[], explained=None)
+        return out
+    s = s[s["js_executed"].astype(bool)] if "js_executed" in s else s
+    if len(s) > MAP_MAX_POINTS:
+        # Keep every agent, sample people (they're the background).
+        ag = s[s["traffic_class"] != HUMAN]
+        hu = s[s["traffic_class"] == HUMAN]
+        s = pd.concat([ag.tail(MAP_MAX_POINTS // 2), hu.sample(min(len(hu), MAP_MAX_POINTS - min(len(ag), MAP_MAX_POINTS // 2)), random_state=1)])
+    if len(s) < 3:
+        out.update(points=[], explained=None)
+        return out
+    feats = _session_behaviour(f, s)
+    # Only visits with enough measured behaviour to place honestly.
+    keep = ((feats.notna().sum(axis=1) >= 4) & feats["mouse_rate"].notna()).to_numpy()
+    if keep.sum() >= 3:
+        s, feats = s[keep], feats[keep]
+    measured = feats.notna()
+    X = feats.astype(float)
+    X = X.fillna(X.median()).fillna(0.0)
+    std = X.std().replace(0, 1.0)
+    Z = ((X - X.mean()) / std).to_numpy()
+    U, S, Vt = np.linalg.svd(Z, full_matrices=False)
+    coords = Z @ Vt[:2].T
+    # Orient so agents sit to the right (positive x) for a stable picture.
+    is_agent = (s["traffic_class"] != HUMAN).to_numpy()
+    if is_agent.any() and (~is_agent).any() and coords[is_agent, 0].mean() < coords[~is_agent, 0].mean():
+        coords[:, 0] *= -1
+    # Robust scale: the 97th percentile sits near the edge; outliers clip to it.
+    span = np.percentile(np.abs(coords), 97, axis=0)
+    span[span == 0] = 1
+    coords = np.clip(coords / span, -1, 1)
+    var = (S ** 2) / max((S ** 2).sum(), 1e-9)
+    # Look-alikes: visits that sit nearer the other group's centre than their
+    # own (people who behave like agents, or agents that blend in). These are
+    # the ones worth a second look; the map shows them with a ring.
+    look = np.zeros(len(coords), dtype=bool)
+    if is_agent.sum() >= 3 and (~is_agent).sum() >= 3:
+        ca, ch = coords[is_agent].mean(axis=0), coords[~is_agent].mean(axis=0)
+        da = np.linalg.norm(coords - ca, axis=1)
+        dh = np.linalg.norm(coords - ch, axis=1)
+        look = np.where(is_agent, dh < da * 0.6, da < dh * 0.6)
+    loadings = {name: [round(float(Vt[0, i]), 3), round(float(Vt[1, i]), 3)] for i, name in enumerate(MAP_FEATURES)}
+    sk = s.reset_index(drop=True)
+    pts = []
+    for i, r in enumerate(sk.itertuples()):
+        pts.append({"x": round(float(coords[i, 0]), 4), "y": round(float(coords[i, 1]), 4),
+                    "session_key": r.session_key, "class": CLASS_KEYS.get(r.traffic_class, "human"),
+                    "class_label": r.traffic_class, "agent": r.agent_name if r.traffic_class != HUMAN else None,
+                    "confidence": _num(r.classification_confidence, 2), "ordered": bool(r.st_ordered),
+                    "measured": int(measured.iloc[i].sum()), "lookalike": bool(look[i])})
+    out.update(points=pts, explained=[round(float(v), 3) for v in var[:2]], loadings=loadings,
+               features=MAP_FEATURES,
+               lookalikes={"people_like_agents": int(sum(1 for p_ in pts if p_["lookalike"] and p_["class"] == "human")),
+                           "agents_like_people": int(sum(1 for p_ in pts if p_["lookalike"] and p_["class"] != "human"))})
+    return out
+
+
+def _channel(r) -> tuple[str, str]:
+    """(channel name, kind) for a session: agents by name, then AI referrals,
+    then the referring site, else direct."""
+    if r.traffic_class in (ASSISTANT, AUTOMATION):
+        name = r.agent_name or "Agent"
+        if name.startswith("Undeclared") or name in ("HeadlessChrome", "Headless client"):
+            name = "AI agent (undeclared)"
+        return (name, "agent")
+    if isinstance(r.ai_source, str) and r.ai_source:
+        return (f"{r.ai_source}", "ai")
+    ref = (r.referrer or "") if isinstance(r.referrer, str) else ""
+    host = ref.split("//")[-1].split("/")[0].lower().removeprefix("www.").removeprefix("m.").removeprefix("l.")
+    if not host:
+        return ("Direct", "direct")
+    for key, name, kind in (("google", "Google", "search"), ("bing", "Bing", "search"), ("duckduckgo", "DuckDuckGo", "search"),
+                            ("facebook", "Facebook", "social"), ("instagram", "Instagram", "social"),
+                            ("tiktok", "TikTok", "social"), ("pinterest", "Pinterest", "social"),
+                            ("youtube", "YouTube", "social"), ("linkedin", "LinkedIn", "social"),
+                            ("t.co", "X", "social"), ("reddit", "Reddit", "social")):
+        if key in host:
+            return (name, kind)
+    return (host, "referral")
+
+
+def channels(f: Frames) -> dict:
+    """Visitors, orders, revenue and revenue per visitor by source, with AI
+    assistants and agents as their own sources (DataFast-style attribution)."""
+    out = _meta(f)
+    s = f.sessions
+    rows: dict[str, dict] = {}
+    if not s.empty:
+        sv = s[~s["traffic_class"].isin([CRAWLER, SCRAPER])]
+        o = _real(f.orders)
+        rev = o.groupby("session_key")["order_value"].sum() if not o.empty else pd.Series(dtype=float)
+        n_orders = o.groupby("session_key").size() if not o.empty else pd.Series(dtype=int)
+        for r in sv.itertuples():
+            name, kind = _channel(r)
+            row = rows.setdefault(name, {"channel": name, "kind": kind, "visitors": 0, "orders": 0, "revenue": 0.0})
+            row["visitors"] += 1
+            row["orders"] += int(n_orders.get(r.session_key, 0))
+            row["revenue"] += float(rev.get(r.session_key, 0.0))
+    o = _real(f.orders)
+    if not o.empty:
+        inapp = o[o["traffic_class"] == AI_CHANNEL]
+        for name, g in inapp.groupby("agent_name"):
+            key = f"{name} (in-app checkout)"
+            rows[key] = {"channel": key, "kind": "ai", "visitors": 0, "orders": int(len(g)),
+                         "revenue": float(g["order_value"].sum())}
+    total_rev = sum(r["revenue"] for r in rows.values()) or 0.0
+    lst = []
+    for r in rows.values():
+        lst.append({**r, "revenue": _num(r["revenue"], 2), "conversion": _ratio(r["orders"], r["visitors"]),
+                    "revenue_per_visitor": _num(r["revenue"] / r["visitors"], 2) if r["visitors"] else None,
+                    "revenue_share": _ratio(r["revenue"], total_rev)})
+    lst.sort(key=lambda r: (r["revenue"] or 0, r["visitors"]), reverse=True)
+    out.update(channels=lst[:20])
+    return out
+
+
+STAGE_OF_PAGE = {"home": "Home", "collection": "Collection", "product": "Product", "searchresults": "Search",
+                 "cart": "Cart"}
+
+
+def _path_of(steps: list[dict], checkout: bool, ordered: bool) -> list[str]:
+    path = []
+    for x in steps:
+        k = x["kind"]
+        if k == "page":
+            st = "Product" if x.get("product") else STAGE_OF_PAGE.get((x.get("path") or "") and None, None)
+            if not st:
+                t = x["text"]
+                st = ("Home" if "home page" in t else "Collection" if "collection" in t else
+                      "Search" if "search results" in t else "Cart" if "cart" in t else "Page")
+        elif k == "search":
+            st = "Search"
+        elif k == "cart_add":
+            st = "Add to cart"
+        elif k == "dead_end":
+            st = "Dead end"
+        else:
+            continue
+        if not path or path[-1] != st:
+            path.append(st)
+    if checkout and (not path or path[-1] != "Checkout"):
+        path.append("Checkout")
+    if ordered:
+        path.append("Order")
+    return path[:8]
+
+
+def agent_journeys(f: Frames, limit: int = 8) -> dict:
+    """How agents move through the store: the most common paths (collapsed
+    to stages) and the latest agent visits as step-by-step journeys."""
+    out = _meta(f)
+    s = f.sessions
+    j = f.journey
+    if s.empty or j is None or j.empty:
+        out.update(paths=[], recent=[], agent_visits=0)
+        return out
+    ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION]) & s["session_key"].isin(set(j["session_key"]))]
+    ag = ag.sort_values("first_seen", ascending=False)
+    px = _pixel_by_session(f)
+    counts: dict[tuple, dict] = {}
+    recent = []
+    for r in ag.itertuples():
+        steps = journey_steps(f, r.session_key)
+        if not steps:
+            continue
+        path = _path_of(steps, bool(r.st_checkout) or bool(px.get(r.session_key)), bool(r.st_ordered))
+        key = tuple(path)
+        c = counts.setdefault(key, {"path": path, "visits": 0, "orders": 0, "seconds": []})
+        c["visits"] += 1
+        c["orders"] += int(bool(r.st_ordered))
+        c["seconds"].append(steps[-1]["t"])
+        if len(recent) < limit:
+            recent.append({"session_key": r.session_key, "first_seen": _iso(r.first_seen), "agent": r.agent_name,
+                           "class": CLASS_KEYS.get(r.traffic_class), "class_label": r.traffic_class,
+                           "confidence": _num(r.classification_confidence, 2), "ordered": bool(r.st_ordered),
+                           "cart_value": _num(r.cart_value, 2), "path": path,
+                           "summary": journey_summary(steps), "steps": steps[:14]})
+    paths = sorted(counts.values(), key=lambda c: (c["visits"], c["orders"]), reverse=True)[:8]
+    out.update(
+        agent_visits=int(sum(c["visits"] for c in counts.values())),
+        paths=[{"path": c["path"], "visits": c["visits"], "orders": c["orders"],
+                "conversion": _ratio(c["orders"], c["visits"]),
+                "median_seconds": _num(sorted(c["seconds"])[len(c["seconds"]) // 2], 0)} for c in paths],
+        recent=recent,
+    )
+    return out
+
+
+def live(f: Frames, minutes: int = 30) -> dict:
+    """Who's on the store right now: visits active in the last N minutes and
+    the latest steps across all of them."""
+    out = _meta(f)
+    s = f.sessions
+    now = f.end if f.source == "demo" else pd.Timestamp.now(tz="UTC")
+    since = now - timedelta(minutes=minutes)
+    if s.empty:
+        out.update(minutes=minutes, visitors=0, agents=0, people=0, feed=[])
+        return out
+    last = s["last_seen"].fillna(s["first_seen"]) if "last_seen" in s else s["first_seen"]
+    act = s[(last >= since) & ~s["traffic_class"].isin([CRAWLER, SCRAPER])]
+    agents = act[act["traffic_class"] != HUMAN]
+    feed = []
+    j = f.journey
+    if j is not None and not j.empty:
+        who = dict(zip(s["session_key"], zip(s["traffic_class"], s["agent_name"])))
+        recent = j[(j["occurred_at"] >= since) & (j["kind"] != "leave") & (j["kind"] != "cart_link")]
+        recent = recent.sort_values("occurred_at", ascending=False).head(20)
+        for e in recent.to_dict("records"):
+            cls, name = who.get(e["session_key"], (HUMAN, None))
+            feed.append({"at": _iso(e["occurred_at"]), "seconds_ago": int((now - e["occurred_at"]).total_seconds()),
+                         "who": name if cls not in (HUMAN, None) else "A visitor",
+                         "is_agent": cls not in (HUMAN, None), "class": CLASS_KEYS.get(cls, "human"),
+                         "kind": e["kind"], "text": _step_text(e), "session_key": e["session_key"]})
+    out.update(minutes=minutes, visitors=int(len(act)), agents=int(len(agents)),
+               people=int(len(act) - len(agents)), feed=feed)
     return out
 
 

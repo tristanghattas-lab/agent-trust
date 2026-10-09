@@ -139,3 +139,168 @@ export function Timeline({ steps }: { steps: { t: number; kind: string; text: st
     </s-stack>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Flashier analytics: visits chart, behaviour map, agent paths, live strip
+// ---------------------------------------------------------------------------
+export const CLASS_COLOURS: Record<string, string> = {
+  human: "#b5b4ad", ai_referred: "#5b4bc4", assistant: "#2a78d6", automation: "#d9572b", agents: "#d9572b",
+};
+
+export function Legend({ items }: { items: { label: string; colour: string; ring?: boolean }[] }) {
+  return (
+    <s-stack direction="inline" gap="base">
+      {items.map((i) => (
+        <s-stack key={i.label} direction="inline" gap="small-300" alignItems="center">
+          <span style={{
+            width: 10, height: 10, borderRadius: 5, display: "inline-block",
+            background: i.ring ? "transparent" : i.colour, border: i.ring ? `2px solid ${i.colour}` : "none",
+          }} />
+          <s-text color="subdued">{i.label}</s-text>
+        </s-stack>
+      ))}
+    </s-stack>
+  );
+}
+
+/** Stacked daily visits: people, people sent by AI, agents. Hover a day for the split. */
+export function VisitsChart({ days }: { days: { date: string; people: number; ai: number; agents: number }[] }) {
+  const W = 640, H = 170, PAD_B = 22, PAD_T = 18;
+  const max = Math.max(...days.map((d) => d.people + d.ai + d.agents), 0);
+  if (!days.length || max <= 0) return null;
+  const slot = W / days.length, bw = Math.max(2, slot - 2);
+  const h = (v: number) => ((H - PAD_T - PAD_B) * v) / max;
+  const label = (iso: string) => new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  return (
+    <s-stack direction="block" gap="small">
+      <Legend items={[
+        { label: "People", colour: CLASS_COLOURS.human },
+        { label: "Sent by AI assistants", colour: CLASS_COLOURS.ai_referred },
+        { label: "AI agents", colour: CLASS_COLOURS.agents },
+      ]} />
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Visits per day" style={{ display: "block" }}>
+        <text x={0} y={11} fontSize="11" fill="#6d7175">{max.toLocaleString()}</text>
+        <line x1={0} x2={W} y1={PAD_T} y2={PAD_T} stroke="#ebebeb" />
+        {days.map((d, i) => {
+          const x = i * slot + 1;
+          let y = H - PAD_B;
+          const segs = [["people", d.people, CLASS_COLOURS.human], ["ai", d.ai, CLASS_COLOURS.ai_referred],
+                        ["agents", d.agents, CLASS_COLOURS.agents]] as const;
+          return (
+            <g key={d.date}>
+              <title>{`${label(d.date)}: ${d.people} people, ${d.ai} sent by AI, ${d.agents} agents`}</title>
+              <rect x={x - 1} y={PAD_T} width={slot} height={H - PAD_B - PAD_T} fill="transparent" />
+              {segs.map(([k, v, c]) => {
+                if (!v) return null;
+                const hh = h(v);
+                y -= hh;
+                return <rect key={k} x={x} y={y} width={bw} height={Math.max(0, hh - 1)} fill={c} rx={1.5} />;
+              })}
+            </g>
+          );
+        })}
+        <line x1={0} x2={W} y1={H - PAD_B} y2={H - PAD_B} stroke="#c9cccf" />
+        <text x={0} y={H - 6} fontSize="11" fill="#6d7175">{label(days[0].date)}</text>
+        <text x={W} y={H - 6} fontSize="11" fill="#6d7175" textAnchor="end">{label(days[days.length - 1].date)}</text>
+      </svg>
+    </s-stack>
+  );
+}
+
+export type MapPoint = {
+  x: number; y: number; session_key: string; class: string; class_label: string; agent: string | null;
+  confidence: number | null; ordered: boolean; lookalike: boolean;
+};
+
+/**
+ * The behaviour map: each dot is a visit, placed by how it behaved (pointer,
+ * typing, pace, reading, tab use). Visits that behave alike sit together.
+ * Bigger dots placed an order; a red ring marks a visit that sits with the
+ * other group (a person behaving like an agent, or an agent blending in).
+ */
+export function BehaviourMap({ points }: { points: MapPoint[] }) {
+  const W = 640, H = 400, P = 18;
+  const sx = (x: number) => P + ((x + 1) / 2) * (W - 2 * P);
+  const sy = (y: number) => P + ((1 - y) / 2) * (H - 2 * P);
+  const groups = [
+    { key: "human", label: "People", colour: CLASS_COLOURS.human },
+    { key: "assistant", label: "AI assistants", colour: CLASS_COLOURS.assistant },
+    { key: "automation", label: "Browser agents", colour: CLASS_COLOURS.automation },
+  ];
+  // Labels sit at each group's median, so a few stragglers don't drag them off the cluster.
+  const median = (xs: number[]) => { const v = [...xs].sort((a, b) => a - b); return v[Math.floor(v.length / 2)]; };
+  const centre = (g: MapPoint[]) => (g.length ? { x: median(g.map((p) => p.x)), y: median(g.map((p) => p.y)) } : null);
+  const hc = centre(points.filter((p) => p.class === "human"));
+  const ac = centre(points.filter((p) => p.class !== "human"));
+  // People first (background), agents on top, order-placing visits last.
+  const order = (p: MapPoint) => (p.class === "human" ? 0 : 1) + (p.ordered ? 2 : 0) + (p.lookalike ? 4 : 0);
+  const sorted = [...points].sort((a, b) => order(a) - order(b));
+  return (
+    <s-stack direction="block" gap="small">
+      <Legend items={[
+        ...groups.map((g) => ({ label: `${g.label} (${points.filter((p) => p.class === g.key).length})`, colour: g.colour })),
+        { label: "Bigger dot: placed an order", colour: "#4a4a4a", ring: true },
+        { label: "Behaves like the other group", colour: "#d72c0d", ring: true },
+      ]} />
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Behaviour map of visits"
+        style={{ display: "block", background: "#fafafa", borderRadius: 8 }}>
+        <line x1={W / 2} x2={W / 2} y1={P} y2={H - P} stroke="#efefef" />
+        <line x1={P} x2={W - P} y1={H / 2} y2={H / 2} stroke="#efefef" />
+        {sorted.map((p) => {
+          const col = CLASS_COLOURS[p.class] || CLASS_COLOURS.human;
+          const r = p.ordered ? 6 : 3.5;
+          return (
+            <a key={p.session_key} href={`/app/visits/${encodeURIComponent(p.session_key)}`}>
+              <title>{`${p.agent || "Person"} · ${p.class_label}${p.confidence != null ? ` · confidence ${p.confidence.toFixed(2)}` : ""}${p.ordered ? " · placed an order" : ""}${p.lookalike ? " · behaves like the other group" : ""}`}</title>
+              <circle cx={sx(p.x)} cy={sy(p.y)} r={r + 4} fill="transparent" />
+              <circle cx={sx(p.x)} cy={sy(p.y)} r={r} fill={col} fillOpacity={p.class === "human" ? 0.65 : 0.85}
+                stroke={p.ordered ? "#4a4a4a" : "#ffffff"} strokeWidth={p.ordered ? 0.9 : 0.8} />
+              {p.lookalike && <circle cx={sx(p.x)} cy={sy(p.y)} r={r + 3.5} fill="none" stroke="#d72c0d" strokeWidth={1.6} />}
+            </a>
+          );
+        })}
+        {hc && (
+          <text x={sx(hc.x)} y={sy(hc.y) - 14} textAnchor="middle" fontSize="13" fontWeight={600} fill="#4a4a4a"
+            stroke="#fafafa" strokeWidth={4} paintOrder="stroke">People</text>
+        )}
+        {ac && (
+          <text x={sx(ac.x)} y={sy(ac.y) - 14} textAnchor="middle" fontSize="13" fontWeight={600} fill="#a8401c"
+            stroke="#fafafa" strokeWidth={4} paintOrder="stroke">Agents</text>
+        )}
+      </svg>
+    </s-stack>
+  );
+}
+
+const STAGE_COLOURS: Record<string, string> = {
+  Home: "#e3e3e3", Collection: "#e3e3e3", Search: "#e6e1fb", Product: "#dbe9fd", Page: "#efefef",
+  "Add to cart": "#d3f2e3", Checkout: "#ffe7c2", Order: "#c8eecf", "Dead end": "#fde0dc", Cart: "#e3e3e3",
+};
+
+export function PathChips({ path }: { path: string[] }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+      {path.map((st, i) => (
+        <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          {i > 0 && <span style={{ color: "#8c9196", fontSize: 12 }}>→</span>}
+          <span style={{
+            background: STAGE_COLOURS[st] || "#efefef", borderRadius: 6, padding: "2px 8px", fontSize: 12,
+            fontWeight: st === "Order" ? 650 : 500, color: "#202223", whiteSpace: "nowrap",
+          }}>{st}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function LiveDot() {
+  return (
+    <span style={{ position: "relative", width: 10, height: 10, display: "inline-block" }}>
+      <style>{`@keyframes atPulse{0%{transform:scale(1);opacity:.6}100%{transform:scale(2.6);opacity:0}}`}</style>
+      <span style={{ position: "absolute", inset: 0, borderRadius: 5, background: "#29845a", animation: "atPulse 1.6s ease-out infinite" }} />
+      <span style={{ position: "absolute", inset: 0, borderRadius: 5, background: "#29845a" }} />
+    </span>
+  );
+}
+
+export const ago = (s: number) => (s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`);

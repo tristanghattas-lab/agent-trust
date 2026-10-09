@@ -45,3 +45,17 @@ def test_demo_products_view():
     d = metrics.products(metrics.load_frames(None, "demo", 30))
     ag, pp = d["agent_behaviour"]["agents"], d["agent_behaviour"]["people"]
     assert d["products"] and ag["avg_seconds_on_page"] < pp["avg_seconds_on_page"]
+
+
+def test_demo_behaviour_views():
+    f = metrics.load_frames(None, "demo", 30)
+    b = metrics.behaviour_map(f)
+    assert len(b["points"]) > 50 and all(-1 <= p["x"] <= 1 and -1 <= p["y"] <= 1 for p in b["points"])
+    ag = [p["x"] for p in b["points"] if p["class"] != "human"]
+    hu = [p["x"] for p in b["points"] if p["class"] == "human"]
+    assert sum(ag) / len(ag) > sum(hu) / len(hu)  # agents oriented to the right
+    ch = metrics.channels(f)["channels"]
+    assert any(c["kind"] == "agent" for c in ch) and any(c["channel"] == "Google" for c in ch)
+    j = metrics.agent_journeys(f)
+    assert j["paths"] and j["recent"] and j["recent"][0]["steps"]
+    assert metrics.live(f)["visitors"] >= 0
