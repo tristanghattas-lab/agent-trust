@@ -2,19 +2,34 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { metricsView } from "../agent-trust.server";
-import { Kpi, KpiGrid, pct } from "../components/ui";
+import { getPlan, metricsView } from "../agent-trust.server";
+import { Kpi, KpiGrid, Locked, pct } from "../components/ui";
 
 /** What agents look at, add to cart, search for and get stuck on, vs people. */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  return { d: await metricsView("products", session.shop, { days: 30 }) };
+  const plan = await getPlan(session.shop);
+  if (!plan.features.includes("products")) return { d: null, plan };
+  return { d: await metricsView("products", session.shop, { days: 30 }), plan };
 };
 
 const secs = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(v)}s`);
 
 export default function Products() {
-  const { d } = useLoaderData<typeof loader>();
+  const { d, plan } = useLoaderData<typeof loader>();
+  if (!plan.features.includes("products")) {
+    return (
+      <s-page heading="How agents shop your store">
+        <s-link slot="breadcrumb-actions" href="/app">Agent Trust</s-link>
+        <s-section>
+          <Locked feature="products" title="What agents look at, search for and skip" trialAvailable={plan.trial_available}>
+            See the products agents view and add, what they search for, which items they leave without adding, and the
+            out-of-stock and missing pages that turn them away.
+          </Locked>
+        </s-section>
+      </s-page>
+    );
+  }
   const ag = d?.agent_behaviour?.agents;
   const pp = d?.agent_behaviour?.people;
   const products: any[] = d?.products ?? [];

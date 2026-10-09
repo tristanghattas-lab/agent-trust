@@ -5,6 +5,7 @@
  * hue per order origin, agent shades share the orange family.
  */
 import type { ReactNode } from "react";
+import { useFetcher } from "react-router";
 
 export const money = (v: number | null | undefined, digits = 0) =>
   v == null ? "—" : `$${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -304,3 +305,94 @@ export function LiveDot() {
 }
 
 export const ago = (s: number) => (s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`);
+
+// ---------------------------------------------------------------------------
+// Plans and locks
+// ---------------------------------------------------------------------------
+export const PLANS = [
+  {
+    key: "free", name: "Free", price: "$0",
+    pitch: "See what AI is doing on your store.",
+    features: ["AI orders in your last 60 days", "AI revenue and agent orders", "Agent sales you're missing, in dollars",
+               "Every order tagged by origin"],
+  },
+  {
+    key: "growth", name: "Growth", price: "$49/month",
+    pitch: "Win more sales from AI shoppers.",
+    features: ["How to fix each missed sale", "Behaviour map and agent journeys", "What agents look at, search for and skip",
+               "Revenue by source, live view", "Weekly AI revenue email"],
+  },
+  {
+    key: "trust", name: "Trust", price: "$149/month",
+    pitch: "Sell to agents without the risk.",
+    features: ["Everything in Growth", "Evidence for every agent order", "Review queue for unverified agent orders",
+               "Order page panel and AI tags", "Chargeback evidence packs and alerts"],
+  },
+] as const;
+
+export const PLAN_FOR_FEATURE: Record<string, "growth" | "trust"> = {
+  fixes: "growth", behaviour: "growth", journeys: "growth", products: "growth", live: "growth", channels: "growth",
+  evidence: "trust", review: "trust", tags: "trust",
+};
+
+/** Start the free trial from anywhere (posts to the Plans page's action). */
+export function TrialButton({ label = "Start 14-day free trial", variant = "primary" }: {
+  label?: string; variant?: "primary" | "secondary";
+}) {
+  const fetcher = useFetcher();
+  return (
+    <s-button variant={variant} loading={fetcher.state !== "idle" || undefined}
+      onClick={() => fetcher.submit({ intent: "trial" }, { method: "post", action: "/app/plans" })}>
+      {label}
+    </s-button>
+  );
+}
+
+/** A locked feature: what it does, and a way in (trial or plans). */
+export function Locked({ feature, title, children, trialAvailable }: {
+  feature: string; title: string; children?: ReactNode; trialAvailable: boolean;
+}) {
+  const plan = PLANS.find((p) => p.key === PLAN_FOR_FEATURE[feature]);
+  return (
+    <s-box padding="base" border="base" borderRadius="base" background="subdued">
+      <s-stack direction="block" gap="small">
+        <s-stack direction="inline" gap="small" alignItems="center">
+          <s-icon type="lock" />
+          <s-text type="strong">{title}</s-text>
+          {plan && <s-badge tone="info">{plan.name}</s-badge>}
+        </s-stack>
+        {children ? <s-text color="subdued">{children}</s-text> : null}
+        <s-stack direction="inline" gap="small">
+          {trialAvailable ? <TrialButton /> : null}
+          <s-button href="/app/plans" variant={trialAvailable ? "secondary" : "primary"}>See plans</s-button>
+        </s-stack>
+      </s-stack>
+    </s-box>
+  );
+}
+
+/** Agent drop-off: share of agent visits reaching each step, and the cart value lost between steps. */
+export function AgentFunnel({ steps, lostCarts, lostCheckouts }: {
+  steps: { step: string; visits: number; share: number | null }[]; lostCarts: number | null; lostCheckouts: number | null;
+}) {
+  const lossAfter: Record<string, number | null> = { "Added to cart": lostCarts, "Started checkout": lostCheckouts };
+  return (
+    <s-stack direction="block" gap="small">
+      {steps.map((s) => (
+        <s-stack key={s.step} direction="block" gap="small-400">
+          <s-stack direction="inline" justifyContent="space-between">
+            <s-text>{s.step}</s-text>
+            <s-text type="strong">{s.visits.toLocaleString()} <s-text color="subdued">({pct(s.share, 0)})</s-text></s-text>
+          </s-stack>
+          <div style={{ height: 14, background: "#f1f1f1", borderRadius: 4 }}>
+            <div style={{ width: `${Math.max(1.5, (s.share ?? 0) * 100)}%`, height: 14, borderRadius: 4,
+                          background: s.step === "Ordered" ? "#17a673" : "#d9572b", opacity: s.step === "Ordered" ? 1 : 0.85 }} />
+          </div>
+          {lossAfter[s.step] ? (
+            <s-text tone="critical">↓ {money(lossAfter[s.step])} in agent carts dropped after this step</s-text>
+          ) : null}
+        </s-stack>
+      ))}
+    </s-stack>
+  );
+}

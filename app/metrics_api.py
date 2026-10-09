@@ -140,6 +140,13 @@ def get_behaviour(shop: str = Depends(resolve_shop), days: int = Days):
                                           if k in ("paths", "recent", "agent_visits")}}
 
 
+@router.get("/opportunities", dependencies=deps)
+def get_opportunities(shop: str = Depends(resolve_shop), days: int = Days):
+    """Agent sales the store missed, in dollars, each with a fix; the agent
+    drop-off funnel; orders to check."""
+    return metrics.opportunities(metrics.load_frames(engine, shop, days))
+
+
 @router.get("/live", dependencies=deps)
 def get_live(shop: str = Depends(resolve_shop), minutes: int = Query(30, ge=5, le=240)):
     """Visits active in the last N minutes and their latest steps."""

@@ -237,3 +237,32 @@ export async function ensurePixel(admin: { graphql: GraphQL }, shop: string): Pr
   const errors = (await created.json())?.data?.webPixelCreate?.userErrors || [];
   return errors.length ? `error: ${errors[0].message}` : "on";
 }
+
+// ---------------------------------------------------------------------------
+// Plans
+// ---------------------------------------------------------------------------
+export type Plan = {
+  plan: "free" | "growth" | "trust";
+  effective_plan: "free" | "growth" | "trust";
+  on_trial: boolean;
+  trial_days_left: number;
+  trial_available: boolean;
+  features: string[];
+};
+
+const FREE: Plan = {
+  plan: "free", effective_plan: "free", on_trial: false, trial_days_left: 0, trial_available: true,
+  features: ["overview", "scan", "missed_sales", "orders_list"],
+};
+
+export async function getPlan(shop: string): Promise<Plan> {
+  try {
+    return (await apiCall(`/plans?shop=${encodeURIComponent(shop)}`)) as Plan;
+  } catch {
+    return FREE;
+  }
+}
+
+export async function changePlan(shop: string, body: { plan?: string; start_trial?: boolean }): Promise<Plan> {
+  return (await apiCall("/plans", { method: "POST", body: JSON.stringify({ shop, ...body }) })) as Plan;
+}

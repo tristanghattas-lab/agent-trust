@@ -4,10 +4,11 @@ import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate, unauthenticated } from "../shopify.server";
 import {
-  DASHBOARD, ensureOrderScan, ensurePixel, metricsView, scanSummary, SCAN_DAYS,
+  DASHBOARD, ensureOrderScan, ensurePixel, getPlan, metricsView, scanSummary, SCAN_DAYS,
 } from "../agent-trust.server";
 import {
-  ActionBadge, ago, DailyBars, HBars, Kpi, KpiGrid, LiveDot, money, ORIGIN_COLOURS, OriginBadge, pct, VisitsChart, when,
+  ActionBadge, ago, DailyBars, HBars, Kpi, KpiGrid, LiveDot, Locked, money, ORIGIN_COLOURS, OriginBadge, pct,
+  TrialButton, VisitsChart, when,
 } from "../components/ui";
 
 /**
@@ -18,19 +19,21 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const [pixel, overview, scanState, live, channels] = await Promise.all([
+  const [pixel, overview, scanState, live, channels, opp, plan] = await Promise.all([
     ensurePixel(admin, shop),
     metricsView("overview", shop, { days: 30 }),
     ensureOrderScan(shop, async () => (await unauthenticated.admin(shop)).admin.graphql),
     metricsView("live", shop, { minutes: 30 }),
     metricsView("channels", shop, { days: 30 }),
+    metricsView("opportunities", shop, { days: 30 }),
+    getPlan(shop),
   ]);
   const scan = scanState.status === "done" ? await scanSummary(shop).catch(() => null) : null;
   const embedLink =
     `https://${shop}/admin/themes/current/editor?context=apps&template=index` +
     `&activateAppId=${process.env.SHOPIFY_API_KEY}/tracker`;
   return {
-    shop, pixel, overview, live, channels: channels?.channels ?? [], scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
+    shop, pixel, overview, live, channels: channels?.channels ?? [], opp, plan, scan, scanStatus: scanState.status, scanDays: SCAN_DAYS, embedLink,
     dashboard: `${DASHBOARD}/?shop=${shop}`,
   };
 };
@@ -44,8 +47,10 @@ const SEVERITY: Record<string, { tone: "critical" | "warning" | "info"; label: s
 };
 
 export default function Home() {
-  const { overview, live: liveInitial, channels, scan, scanStatus, scanDays, pixel, embedLink, dashboard } =
+  const { overview, live: liveInitial, channels, opp, plan, scan, scanStatus, scanDays, pixel, embedLink, dashboard } =
     useLoaderData<typeof loader>();
+  const has = (f: string) => plan.features.includes(f);
+  const items: any[] = opp?.items ?? [];
   // Live strip: refresh every 20 seconds without reloading the page.
   const fetcher = useFetcher<any>();
   useEffect(() => {
@@ -69,8 +74,10 @@ export default function Home() {
   const review = ao.needs_review ?? 0;
 
   return (
-    <s-page heading="Agent Trust">
-      <s-button slot="primary-action" href="/app/orders">View orders</s-button>
+    <s-page heading={plan.on_trial ? `Agent Trust · trial, ${plan.trial_days_left} days left` : "Agent Trust"}>
+      <s-button slot="primary-action" href={plan.effective_plan === "free" ? "/app/plans" : "/app/orders"}>
+        {plan.effective_plan === "free" ? "Upgrade" : "View orders"}
+      </s-button>
       <s-button slot="secondary-actions" href={dashboard} target="_blank">Full dashboard</s-button>
 
       {/* Past-order scan: the first thing a new merchant sees. */}
@@ -94,6 +101,61 @@ export default function Home() {
           Looking for orders that came from ChatGPT, Perplexity, Copilot and other AI. Reload in a minute.
         </s-banner>
       )}
+
+      <s-section heading="Agent sales left on the table, last 30 days">
+        {items.length ? (
+          <s-stack direction="block" gap="base">
+            <s-stack direction="block" gap="none">
+              <span style={{ fontSize: 30, fontWeight: 650, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>
+                {money(opp?.missed_total ?? 0)}
+              </span>
+              <s-text color="subdued">
+                {money(opp?.missed_measured ?? 0)} measured from abandoned agent carts and checkouts; the rest estimated
+                from agents turned away by dead ends.
+              </s-text>
+            </s-stack>
+            {items.map((i) => (
+              <s-box key={i.key} padding="base" border="base" borderRadius="base">
+                <s-stack direction="block" gap="small-200">
+                  <s-stack direction="inline" justifyContent="space-between" gap="base" alignItems="center">
+                    <s-stack direction="inline" gap="small" alignItems="center">
+                      <s-badge tone={i.category === "protect" ? "critical" : i.category === "recover" ? "warning" : "info"}>
+                        {i.category === "protect" ? "Protect" : i.category === "recover" ? "Recover" : "Improve"}
+                      </s-badge>
+                      <s-text type="strong">{i.title}</s-text>
+                    </s-stack>
+                    {i.value != null && (
+                      <s-text type="strong">{i.estimate ? "~" : ""}{money(i.value)}</s-text>
+                    )}
+                  </s-stack>
+                  <s-text color="subdued">{i.detail}</s-text>
+                  {has(i.category === "protect" ? "review" : "fixes") ? (
+                    <s-stack direction="inline" gap="small-200" alignItems="start">
+                      <s-icon type="lightbulb" tone="info" />
+                      <s-text>{i.fix}</s-text>
+                    </s-stack>
+                  ) : (
+                    <s-stack direction="inline" gap="small" alignItems="center">
+                      <s-icon type="lock" />
+                      <s-text color="subdued">
+                        {i.category === "protect" ? "Evidence and review queue on Trust." : "How to fix this is on Growth."}
+                      </s-text>
+                      {plan.trial_available ? <TrialButton label="Unlock free for 14 days" variant="secondary" /> : (
+                        <s-link href="/app/plans">See plans</s-link>
+                      )}
+                    </s-stack>
+                  )}
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        ) : (
+          <s-text color="subdued">
+            Nothing missed yet. As agents shop your store, abandoned agent carts, checkouts and dead ends show up here
+            with what they cost you.
+          </s-text>
+        )}
+      </s-section>
 
       <s-section>
         <s-stack direction="block" gap="small">
@@ -160,8 +222,12 @@ export default function Home() {
         )}
       </s-section>
 
-      <s-section heading="Revenue by source" padding="none">
-        {channels.length ? (
+      <s-section heading="Revenue by source" padding={has("channels") ? "none" : "base"}>
+        {!has("channels") ? (
+          <Locked feature="channels" title="Revenue and revenue per visitor for every source" trialAvailable={plan.trial_available}>
+            See which AI assistants and agents bring the most valuable shoppers, next to Google, social and direct.
+          </Locked>
+        ) : channels.length ? (
           <s-table>
             <s-table-header-row>
               <s-table-header listSlot="primary">Source</s-table-header>

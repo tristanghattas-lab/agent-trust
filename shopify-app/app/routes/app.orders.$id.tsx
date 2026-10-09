@@ -2,17 +2,18 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyTags, fetchOrderVerdict } from "../agent-trust.server";
-import { ActionBadge, money, OriginBadge, Timeline, when } from "../components/ui";
+import { applyTags, fetchOrderVerdict, getPlan } from "../agent-trust.server";
+import { ActionBadge, Locked, money, OriginBadge, Timeline, when } from "../components/ui";
 
 /** One order: verdict, evidence chain, what the visitor did, items, checkout timing. */
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
-  const o: any = await fetchOrderVerdict(session.shop, String(params.id)).catch(() => null);
-  if (o?.shopify_order_id) {
+  const [o, plan]: [any, any] = await Promise.all([
+    fetchOrderVerdict(session.shop, String(params.id)).catch(() => null), getPlan(session.shop)]);
+  if (o?.shopify_order_id && plan.features.includes("tags")) {
     await applyTags(admin.graphql, o.shopify_order_id, o).catch(() => null);  // keep tags current
   }
-  return { o };
+  return { o, plan };
 };
 
 const STEP_NAMES: Record<string, string> = {
@@ -22,7 +23,8 @@ const STEP_NAMES: Record<string, string> = {
 };
 
 export default function OrderDetail() {
-  const { o } = useLoaderData<typeof loader>();
+  const { o, plan } = useLoaderData<typeof loader>();
+  const evidence = plan.features.includes("evidence");
   if (!o) {
     return (
       <s-page heading="Order">
@@ -57,6 +59,15 @@ export default function OrderDetail() {
         </s-stack>
       </s-section>
 
+      {!evidence ? (
+        <s-section>
+          <Locked feature="evidence" title="The evidence behind this order" trialAvailable={plan.trial_available}>
+            See where the order came from, who the agent was and whether it proved it, every step it took, and why it
+            was flagged. Keep it for chargebacks and disputes.
+          </Locked>
+        </s-section>
+      ) : (
+        <>
       <s-section heading="Evidence">
         <s-stack direction="block" gap="base">
           {(o.chain || []).map((c: any) => (
@@ -81,6 +92,9 @@ export default function OrderDetail() {
             {o.session.reasons.map((r: any) => <s-list-item key={r.code}>{r.text}</s-list-item>)}
           </s-unordered-list>
         </s-section>
+      )}
+
+        </>
       )}
 
       <s-section slot="aside" heading="Details">

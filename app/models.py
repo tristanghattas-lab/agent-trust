@@ -319,3 +319,16 @@ class BackfillRun(Base):
     orders_scanned: Mapped[int] = mapped_column(Integer, default=0)
     orders_added: Mapped[int] = mapped_column(Integer, default=0)
     oldest_order_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ShopPlan(Base):
+    """A store's Agent Trust plan: free, growth or trust, with an optional
+    free trial (full features until trial_ends_at)."""
+
+    __tablename__ = "shop_plans"
+
+    shop_domain: Mapped[str] = mapped_column(String, primary_key=True)
+    plan: Mapped[str] = mapped_column(String, default="free")
+    trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trial_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

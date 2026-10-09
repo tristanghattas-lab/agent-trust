@@ -2,8 +2,8 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { metricsView } from "../agent-trust.server";
-import { BehaviourMap, money, PathChips, pct, when } from "../components/ui";
+import { getPlan, metricsView } from "../agent-trust.server";
+import { AgentFunnel, BehaviourMap, Locked, money, PathChips, when } from "../components/ui";
 import type { MapPoint } from "../components/ui";
 
 /**
@@ -12,13 +12,32 @@ import type { MapPoint } from "../components/ui";
  */
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  return { d: await metricsView("behaviour", session.shop, { days: 30 }) };
+  const plan = await getPlan(session.shop);
+  if (!plan.features.includes("behaviour")) return { d: null, opp: null, plan };
+  const [d, opp] = await Promise.all([
+    metricsView("behaviour", session.shop, { days: 30 }),
+    metricsView("opportunities", session.shop, { days: 30 }),
+  ]);
+  return { d, opp, plan };
 };
 
 export default function Behaviour() {
-  const { d } = useLoaderData<typeof loader>();
+  const { d, opp, plan } = useLoaderData<typeof loader>();
+  if (!plan.features.includes("behaviour")) {
+    return (
+      <s-page heading="Behaviour">
+        <s-link slot="breadcrumb-actions" href="/app">Agent Trust</s-link>
+        <s-section>
+          <Locked feature="behaviour" title="See how every visit behaves, and where agents drop out" trialAvailable={plan.trial_available}>
+            The behaviour map places every visit by how it behaves, so agents stand out from people even when they
+            hide what they are. See where agents drop out of your funnel, what it costs, and each agent visit step by step.
+          </Locked>
+        </s-section>
+      </s-page>
+    );
+  }
+  const funnel = opp?.funnel;
   const points: MapPoint[] = d?.points ?? [];
-  const paths: any[] = d?.paths ?? [];
   const recent: any[] = d?.recent ?? [];
   const look = d?.lookalikes ?? {};
   return (
@@ -50,28 +69,14 @@ export default function Behaviour() {
         </s-stack>
       </s-section>
 
-      <s-section heading="How agents move through your store" padding="none">
-        {paths.length ? (
-          <s-table>
-            <s-table-header-row>
-              <s-table-header listSlot="primary">Path</s-table-header>
-              <s-table-header format="numeric">Visits</s-table-header>
-              <s-table-header format="numeric">Orders</s-table-header>
-              <s-table-header format="numeric">Typical time</s-table-header>
-            </s-table-header-row>
-            <s-table-body>
-              {paths.map((p, i) => (
-                <s-table-row key={i}>
-                  <s-table-cell><PathChips path={p.path} /></s-table-cell>
-                  <s-table-cell>{p.visits}</s-table-cell>
-                  <s-table-cell>{p.orders ? `${p.orders} (${pct(p.conversion, 0)})` : "—"}</s-table-cell>
-                  <s-table-cell>{p.median_seconds != null ? `${p.median_seconds}s` : "—"}</s-table-cell>
-                </s-table-row>
-              ))}
-            </s-table-body>
-          </s-table>
+      <s-section heading="Where agents drop out">
+        {funnel?.steps?.length && funnel.agent_visits ? (
+          <s-stack direction="block" gap="base">
+            <AgentFunnel steps={funnel.steps} lostCarts={funnel.lost_carts} lostCheckouts={funnel.lost_checkouts} />
+            <s-link href="/app">See what to fix on Home</s-link>
+          </s-stack>
         ) : (
-          <s-box padding="base"><s-text color="subdued">No agent visits with page-by-page steps yet.</s-text></s-box>
+          <s-text color="subdued">No agent visits yet.</s-text>
         )}
       </s-section>
 

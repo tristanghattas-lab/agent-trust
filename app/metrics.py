@@ -1668,6 +1668,156 @@ def live(f: Frames, minutes: int = 30) -> dict:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Opportunities: agent sales the store is missing, in dollars, with fixes
+# ---------------------------------------------------------------------------
+STEP_LABELS = {
+    "checkout_started": "the start of checkout", "checkout_contact_info_submitted": "contact details",
+    "checkout_address_info_submitted": "the address step", "checkout_shipping_info_submitted": "shipping",
+    "payment_info_submitted": "payment",
+}
+
+
+def _agent_aov(f: Frames) -> float:
+    o = _real(f.orders)
+    if o.empty:
+        return 0.0
+    ag = o[o["traffic_class"].isin([ASSISTANT, AUTOMATION, AI_CHANNEL])]
+    pool = ag if len(ag) >= 3 else o
+    return float(pool["order_value"].mean() or 0.0)
+
+
+def agent_funnel(f: Frames) -> dict:
+    """Where browser agents drop out, with the cart value lost at each step."""
+    s = f.sessions
+    if s.empty:
+        return {"steps": [], "lost_carts": 0.0, "lost_checkouts": 0.0}
+    ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
+    n = len(ag)
+    cart = pd.to_numeric(ag["cart_value"], errors="coerce").fillna(0)
+    lost_carts = float(cart[ag["st_cart"] & ~ag["st_checkout"]].sum())
+    lost_checkouts = float(cart[ag["st_checkout"] & ~ag["st_ordered"]].sum())
+    steps = []
+    for key, label in (("visits", "Visited"), ("st_view", "Viewed a product"), ("st_cart", "Added to cart"),
+                       ("st_checkout", "Started checkout"), ("st_ordered", "Ordered")):
+        count = n if key == "visits" else int(ag[key].sum())
+        steps.append({"step": label, "visits": count, "share": _ratio(count, n)})
+    return {"steps": steps, "lost_carts": _num(lost_carts, 2), "lost_checkouts": _num(lost_checkouts, 2),
+            "agent_visits": n}
+
+
+def opportunities(f: Frames) -> dict:
+    """Agent sales the store missed in the window, each with a dollar figure
+    (measured where we have cart values, estimated where we don't) and what
+    to do about it, plus the agent drop-off funnel and risk items."""
+    out = _meta(f)
+    s = f.sessions
+    funnel = agent_funnel(f)
+    items = []
+    aov = _agent_aov(f)
+    if s.empty:
+        out.update(missed_total=0.0, items=[], funnel=funnel, agent_aov=_num(aov, 2))
+        return out
+    ag = s[s["traffic_class"].isin([ASSISTANT, AUTOMATION])]
+    ag_keys = set(ag["session_key"])
+    cart = pd.to_numeric(ag["cart_value"], errors="coerce").fillna(0)
+    # Order rate for agents that reached a product: used to estimate the
+    # value of agents turned away by a dead end.
+    viewed = ag[ag["st_view"]]
+    order_rate = float(viewed["st_ordered"].mean()) if len(viewed) else 0.0
+
+    # 1. Checkouts agents started and didn't finish (measured: cart values).
+    ab = ag[ag["st_checkout"] & ~ag["st_ordered"]]
+    if len(ab):
+        px = _pixel_by_session(f)
+        last = [STEP_LABELS.get(st[-1][0]) for k in ab["session_key"] if (st := px.get(k))]
+        last = [x for x in last if x]
+        where = max(set(last), key=last.count) if last else None
+        items.append({
+            "key": "abandoned_checkouts", "category": "recover", "estimate": False,
+            "value": _num(float(cart[ab.index].sum()), 2), "count": int(len(ab)),
+            "title": f"{len(ab)} agent checkout{'s' if len(ab) != 1 else ''} abandoned",
+            "detail": (f"Most stopped at {where}." if where else "Agents reached checkout and didn't pay."),
+            "fix": "Make sure a plain card payment works without signing in to Shop Pay or creating an account, "
+                   "and keep shipping options simple. Agents give up on steps that need a login or a one-time code.",
+        })
+    # 2. Carts agents built and never took to checkout (measured).
+    ac = ag[ag["st_cart"] & ~ag["st_checkout"]]
+    if len(ac):
+        items.append({
+            "key": "abandoned_carts", "category": "recover", "estimate": False,
+            "value": _num(float(cart[ac.index].sum()), 2), "count": int(len(ac)),
+            "title": f"{len(ac)} agent cart{'s' if len(ac) != 1 else ''} never reached checkout",
+            "detail": "The agent added items, then left.",
+            "fix": "Show the delivered price (shipping and delivery time) on the product page. Agents often stop "
+                   "when they can't confirm the total for their user.",
+        })
+    j = f.journey
+    if j is not None and not j.empty:
+        aj = j[j["session_key"].isin(ag_keys)]
+        # 3. Out-of-stock products agents wanted (estimated).
+        oos = aj[(aj["kind"] == "dead_end") & (aj["detail"] == "out_of_stock")]
+        if len(oos):
+            sessions = oos["session_key"].nunique()
+            top = oos.assign(name=oos["title"].fillna(oos["product"])).groupby("name").size().sort_values(ascending=False)
+            items.append({
+                "key": "out_of_stock", "category": "recover", "estimate": True,
+                "value": _num(sessions * order_rate * aov, 2), "count": int(sessions),
+                "title": f"{sessions} agent visit{'s' if sessions != 1 else ''} hit out-of-stock products",
+                "detail": "Most wanted: " + ", ".join(f"{n} ({c})" for n, c in top.head(3).items()),
+                "fix": "Restock the most wanted items, or offer pre-order or back-in-stock alerts and link close "
+                       "alternatives on the page so the agent has somewhere to go.",
+            })
+        # 4. Missing pages agents landed on (estimated).
+        nf = aj[(aj["kind"] == "dead_end") & (aj["detail"] == "404")]
+        if len(nf):
+            sessions = nf["session_key"].nunique()
+            top = nf.groupby("path").size().sort_values(ascending=False)
+            items.append({
+                "key": "not_found", "category": "recover", "estimate": True,
+                "value": _num(sessions * order_rate * aov, 2), "count": int(sessions),
+                "title": f"{sessions} agent visit{'s' if sessions != 1 else ''} hit missing pages",
+                "detail": "Top: " + ", ".join(f"{p_} ({c})" for p_, c in top.head(3).items()),
+                "fix": "Add redirects for these URLs (Online Store → Navigation → URL redirects). Agents often use "
+                       "old links from AI answers.",
+            })
+        # 5. Products agents look at but never add (no dollar figure).
+        prod = aj[aj["product"].notna()]
+        if len(prod):
+            g = prod.groupby("product").agg(views=("kind", lambda k: int((k == "page").sum())),
+                                           adds=("kind", lambda k: int((k == "cart_add").sum())),
+                                           title=("title", "last"))
+            cold = g[(g["views"] >= 3) & (g["adds"] == 0)].sort_values("views", ascending=False)
+            if len(cold):
+                items.append({
+                    "key": "viewed_not_added", "category": "improve", "estimate": True, "value": None,
+                    "count": int(len(cold)),
+                    "title": f"{len(cold)} product{'s' if len(cold) != 1 else ''} agents look at but never add",
+                    "detail": "Top: " + ", ".join(f"{(r.title if isinstance(r.title, str) else i)} ({r.views} views)"
+                                                  for i, r in cold.head(3).iterrows()),
+                    "fix": "Put price, stock, size or vintage and shipping in the page text and product data, not just "
+                           "images. Agents can't add what they can't confirm.",
+                })
+    # 6. Risk: agent orders that need a look.
+    rows = _order_rows(f)
+    review = [x for x in rows if x["needs_review"] and not x["is_test"]]
+    if review:
+        items.append({
+            "key": "review", "category": "protect", "estimate": False,
+            "value": _num(sum(x["order_value"] or 0 for x in review), 2), "count": len(review),
+            "title": f"{len(review)} order{'s' if len(review) != 1 else ''} to check before fulfilling",
+            "detail": "Flagged, or placed by agents that didn't prove who they are.",
+            "fix": "Open each order's evidence in Agent Trust before fulfilling.",
+        })
+    missed = sum(i["value"] or 0 for i in items if i["category"] == "recover")
+    measured = sum(i["value"] or 0 for i in items if i["category"] == "recover" and not i["estimate"])
+    order = {"recover": 0, "protect": 1, "improve": 2}
+    items.sort(key=lambda i: (order[i["category"]], -(i["value"] or 0)))
+    out.update(missed_total=_num(missed, 2), missed_measured=_num(measured, 2), agent_aov=_num(aov, 2),
+               agent_order_rate=_num(order_rate, 4), items=items, funnel=funnel)
+    return out
+
+
 def threats(f: Frames) -> dict:
     r = f.runs
     out = _meta(f)

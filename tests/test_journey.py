@@ -59,3 +59,13 @@ def test_demo_behaviour_views():
     j = metrics.agent_journeys(f)
     assert j["paths"] and j["recent"] and j["recent"][0]["steps"]
     assert metrics.live(f)["visitors"] >= 0
+
+
+def test_demo_opportunities():
+    o = metrics.opportunities(metrics.load_frames(None, "demo", 30))
+    keys = {i["key"] for i in o["items"]}
+    assert {"abandoned_checkouts", "abandoned_carts"} <= keys
+    assert o["missed_total"] >= o["missed_measured"] > 0
+    assert all(i["fix"] for i in o["items"])
+    steps = [s["visits"] for s in o["funnel"]["steps"]]
+    assert steps == sorted(steps, reverse=True)

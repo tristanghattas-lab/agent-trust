@@ -2,8 +2,8 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { metricsView } from "../agent-trust.server";
-import { ActionBadge, money, OriginBadge, when } from "../components/ui";
+import { getPlan, metricsView } from "../agent-trust.server";
+import { ActionBadge, Locked, money, OriginBadge, when } from "../components/ui";
 
 /** Every order with where it came from, the agent, evidence and a recommended action. */
 const FILTERS = [
@@ -13,15 +13,17 @@ const FILTERS = [
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const filter = new URL(request.url).searchParams.get("filter") || "ai";
-  const data = await metricsView("orders/list", session.shop, { days: 90, limit: 500 });
+  const [data, plan] = await Promise.all([
+    metricsView("orders/list", session.shop, { days: 90, limit: 500 }), getPlan(session.shop)]);
   const all: any[] = data?.orders ?? [];
   const orders = all.filter((o) =>
     filter === "all" ? true : filter === "review" ? o.needs_review : !["human", "unmatched"].includes(o.origin));
-  return { orders: orders.slice(0, 250), filter, total: all.length, reachable: !!data };
+  return { orders: orders.slice(0, 250), filter, total: all.length, reachable: !!data, plan };
 };
 
 export default function Orders() {
-  const { orders, filter, total, reachable } = useLoaderData<typeof loader>();
+  const { orders, filter, total, reachable, plan } = useLoaderData<typeof loader>();
+  const reviewLocked = filter === "review" && !plan.features.includes("review");
   return (
     <s-page heading="Orders" inlineSize="large">
       <s-link slot="breadcrumb-actions" href="/app">Agent Trust</s-link>
@@ -35,7 +37,15 @@ export default function Orders() {
             ))}
           </s-stack>
         </s-box>
-        {orders.length ? (
+        {reviewLocked ? (
+          <s-box padding="base">
+            <Locked feature="review" title={`${orders.length} order${orders.length === 1 ? "" : "s"} to check before fulfilling`}
+              trialAvailable={plan.trial_available}>
+              A review queue of flagged orders and high-value orders from agents that didn't prove who they are, each with
+              its evidence.
+            </Locked>
+          </s-box>
+        ) : orders.length ? (
           <s-table>
             <s-table-header-row>
               <s-table-header listSlot="primary">Order</s-table-header>

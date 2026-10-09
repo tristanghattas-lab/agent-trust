@@ -28,6 +28,7 @@ from app.models import ThreatTestRun
 from app.schemas import IngestEvent, ThreatTestRunIn
 from app.shopify_webhooks import get_webhook_secret, parse_order_payload, verify_shopify_hmac
 from app.backfill import router as backfill_router
+from app.plans import router as plans_router
 from app.cloudflare import router as cloudflare_router
 from app.commerce import router as commerce_router
 from app.edge import router as edge_router
@@ -91,6 +92,7 @@ app.include_router(edge_router)
 app.include_router(cloudflare_router)
 app.include_router(commerce_router)
 app.include_router(backfill_router)
+app.include_router(plans_router)
 
 
 @app.on_event("startup")
