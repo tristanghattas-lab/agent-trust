@@ -393,6 +393,61 @@ export async function applyTypes(graphql: GraphQL, items: { id: string; type: st
   return { done, errors };
 }
 
+// ---------------------------------------------------------------------------
+// Fix queue: image alt text from product and variant names
+// ---------------------------------------------------------------------------
+export type AltItem = { productId: string; title: string; media: { id: string; alt: string }[] };
+
+/** Products with images that have no alt text (up to `pages` x 50 products; 50 x 10 media keeps
+ * each query under Shopify's 1,000-point cost limit). */
+export async function imagesWithoutAlt(graphql: GraphQL, pages = 20): Promise<{ items: AltItem[]; images: number; checked: number }> {
+  const items: AltItem[] = [];
+  let after: string | null = null, images = 0, checked = 0;
+  for (let i = 0; i < pages; i++) {
+    const r = await graphql(`#graphql
+      query noAlt($after: String) {
+        products(first: 50, after: $after, query: "status:active") {
+          pageInfo { hasNextPage endCursor }
+          nodes { id title vendor media(first: 10) { nodes { id alt mediaContentType } } }
+        }
+      }`, { variables: { after } });
+    const data: any = (await r.json())?.data?.products;
+    if (!data) break;
+    for (const p of data.nodes) {
+      checked++;
+      const imgs = p.media.nodes.filter((m: any) => m.mediaContentType === "IMAGE");
+      images += imgs.length;
+      const missing = imgs.map((m: any, idx: number) => ({ ...m, idx })).filter((m: any) => !(m.alt || "").trim());
+      if (missing.length) {
+        const base = p.vendor && !p.title.toLowerCase().includes(p.vendor.toLowerCase()) ? `${p.vendor} ${p.title}` : p.title;
+        items.push({
+          productId: p.id, title: p.title,
+          media: missing.map((m: any) => ({ id: m.id, alt: m.idx === 0 ? base : `${base}, image ${m.idx + 1}` })),
+        });
+      }
+    }
+    if (!data.pageInfo.hasNextPage) break;
+    after = data.pageInfo.endCursor;
+  }
+  return { items, images, checked };
+}
+
+export async function applyAlt(graphql: GraphQL, items: AltItem[]): Promise<{ done: number; errors: string[] }> {
+  let done = 0;
+  const errors: string[] = [];
+  for (const it of items) {
+    // productUpdateMedia works with write_products (fileUpdate would need write_files).
+    const r = await graphql(`#graphql
+      mutation setAlt($productId: ID!, $media: [UpdateMediaInput!]!) {
+        productUpdateMedia(productId: $productId, media: $media) { mediaUserErrors { message } }
+      }`, { variables: { productId: it.productId, media: it.media } });
+    const errs = (await r.json())?.data?.productUpdateMedia?.mediaUserErrors ?? [];
+    if (errs.length) errors.push(`${it.title}: ${errs[0].message}`);
+    else done += it.media.length;
+  }
+  return { done, errors };
+}
+
 /** Metafields that look like critic scores or cellaring advice, from a sample of products. */
 export async function scoreFields(graphql: GraphQL): Promise<{ key: string; examples: string[]; products: number }[]> {
   const res = await graphql(`#graphql

@@ -159,9 +159,25 @@ export default function Home() {
                 </s-stack>
               </s-box>
             ))}
+            {shelf.run.readiness && (() => {
+              const bad = shelf.run.readiness.checks.filter((c: any) => c.status === "fail");
+              return (
+                <s-box padding="small" border="base" borderRadius="base" background="subdued">
+                  <s-stack direction="inline" gap="small" alignItems="center">
+                    <s-badge tone={bad.length ? "critical" : "success"}>Readiness {shelf.run.readiness.score ?? "–"}/100</s-badge>
+                    <s-text>
+                      {bad.length ? bad.slice(0, 2).map((c: any) => c.title).join(" · ") + (bad.length > 2 ? ` · +${bad.length - 2} more` : "")
+                        : "AI agents can reach your store and read your product data."}
+                    </s-text>
+                    <s-link href="/app/readiness">Details</s-link>
+                  </s-stack>
+                </s-box>
+              );
+            })()}
             <s-stack direction="inline" gap="small">
               <s-button variant="primary" href="/app/fixes">See fixes</s-button>
               <s-button href="/app/shelf">All requests</s-button>
+              <s-button href="/app/readiness">Readiness</s-button>
             </s-stack>
           </s-stack>
         ) : (

@@ -326,22 +326,28 @@ def catalogue_health(products: list[dict], collections: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # A full run
 # ---------------------------------------------------------------------------
-def store_locale(domain: str) -> tuple[str, str]:
-    """(country code, currency) from the store's public meta, default AU/AUD."""
+def store_meta(domain: str) -> dict:
     try:
-        m = _get(f"https://{domain}/meta.json")
-        country = (m.get("country") or "AU").upper()[:2]
-        return country, (m.get("currency") or "AUD").upper()
+        return _get(f"https://{domain}/meta.json") or {}
     except Exception:  # noqa: BLE001
-        return "AU", "AUD"
+        return {}
+
+
+def store_locale(domain: str, meta: dict | None = None) -> tuple[str, str]:
+    """(country code, currency) from the store's public meta, default AU/AUD."""
+    m = store_meta(domain) if meta is None else meta
+    return (m.get("country") or "AU").upper()[:2], (m.get("currency") or "AUD").upper()
 
 
 def run_shelf_test(domain: str, country: str | None = None, currency: str | None = None) -> dict:
     """Run every request against the store's agent search. `domain` is the
     store's myshopify or storefront domain."""
     started = datetime.now(timezone.utc)
+    meta = store_meta(domain)
     if not (country and currency):
-        country, currency = store_locale(domain)
+        country, currency = store_locale(domain, meta)
+    # Agents reach the customer-facing domain, not myshopify.com.
+    primary = (meta.get("domain") or domain).strip().lower()
     _note(stage="catalogue")
     products = fetch_catalogue(domain)
     _note(stage="collections", products=len(products))
@@ -370,6 +376,13 @@ def run_shelf_test(domain: str, country: str | None = None, currency: str | None
             logger.warning("shelf request %s failed: %s", req.id, exc)
             results.append({"id": req.id, "query": req.query, "source": req.source, "verdict": "error",
                             "error": str(exc)[:200], "top": [], "missed_products": []})
+    _note(stage="readiness")
+    try:
+        from app import readiness
+        ready = readiness.check(primary, products)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("readiness check failed for %s: %s", primary, exc)
+        ready = None
     scored = [r for r in results if r["verdict"] != "error"]
     counts = {v: sum(1 for r in scored if r["verdict"] == v) for v in ("found", "partial", "missed")}
     return {
@@ -378,6 +391,7 @@ def run_shelf_test(domain: str, country: str | None = None, currency: str | None
         "score": round((counts["found"] + 0.5 * counts["partial"]) / len(scored) * 100) if scored else None,
         "results": sorted(results, key=lambda r: {"missed": 0, "partial": 1, "error": 2, "found": 3}[r["verdict"]]),
         "health": catalogue_health(products, collections),
+        "readiness": ready,
     }
 
 
@@ -423,6 +437,13 @@ def start_in_background(shop: str, domain: str | None = None) -> bool:
     return True
 
 
+def _readiness_score(result: str) -> int | None:
+    try:
+        return (json.loads(result).get("readiness") or {}).get("score")
+    except ValueError:
+        return None
+
+
 def latest(shop: str, history: int = 12) -> dict:
     from app.db import SessionLocal
     from app.models import ShelfRun
@@ -440,5 +461,6 @@ def latest(shop: str, history: int = 12) -> dict:
             "stale": datetime.now(timezone.utc) - fin > timedelta(days=7),
             "run": json.loads(last.result),
             "history": [{"at": (r.finished_at.isoformat()), "score": r.score, "found": r.found,
-                         "partial": r.partial, "missed": r.missed, "requests": r.requests} for r in reversed(rows)],
+                         "partial": r.partial, "missed": r.missed, "requests": r.requests,
+                         "readiness": _readiness_score(r.result)} for r in reversed(rows)],
         }

@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, HeadersFunction, LoaderFunctionArgs } from "re
 import { useFetcher, useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
-import { applyTypes, getPlan, scoreFields, shelfLatest, untypedProducts } from "../agent-trust.server";
+import { applyAlt, applyTypes, getPlan, imagesWithoutAlt, scoreFields, shelfLatest, untypedProducts } from "../agent-trust.server";
 import { Locked } from "../components/ui";
 
 /**
@@ -10,7 +10,10 @@ import { Locked } from "../components/ui";
  *   1. Product types, from the store's own collections (preview, then apply).
  *   2. Critic scores and cellaring advice: where they're stored, so they can
  *      be put where agents read them.
- *   3. Internal tags and collections agents see (review only: tags often
+ *   3. Image alt text from product names (preview, then apply).
+ *   4. Readiness fixes the app can't make (robots.txt, CDN bot blocks,
+ *      barcodes, reviews): step-by-step, from the readiness check.
+ *   5. Internal tags and collections agents see (review only: tags often
  *      drive collections and discounts, so nothing is removed automatically).
  */
 const BATCH = 100;
@@ -18,10 +21,11 @@ const BATCH = 100;
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const plan = await getPlan(session.shop);
-  const [shelf, untyped, scores] = await Promise.all([
+  const [shelf, untyped, scores, alt] = await Promise.all([
     shelfLatest(session.shop),
     untypedProducts(admin.graphql).catch(() => []),
     scoreFields(admin.graphql).catch(() => []),
+    imagesWithoutAlt(admin.graphql).catch(() => ({ items: [], images: 0, checked: 0 })),
   ]);
   const byType: Record<string, { count: number; examples: string[] }> = {};
   for (const u of untyped) {
@@ -29,7 +33,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     t.count++;
     if (t.examples.length < 3) t.examples.push(u.title);
   }
-  return { plan, health: shelf?.run?.health ?? null, byType, untypedTotal: untyped.length, scores };
+  const altImages = alt.items.reduce((n, i) => n + i.media.length, 0);
+  const guides = (shelf?.run?.readiness?.checks ?? []).filter((c: any) => (c.status === "fail" || c.status === "warn") && c.fix_kind === "guide");
+  return {
+    plan, health: shelf?.run?.health ?? null, byType, untypedTotal: untyped.length, scores, guides,
+    alt: { images: alt.images, missing: altImages, checked: alt.checked, examples: alt.items.slice(0, 3).map((i) => i.media[0].alt) },
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -43,11 +52,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const r = await applyTypes(admin.graphql, items.map((i) => ({ id: i.id, type: i.proposed })));
     return { applied: r.done, errors: r.errors.slice(0, 5), type };
   }
+  if (form.get("intent") === "alt") {
+    const { items } = await imagesWithoutAlt(admin.graphql);
+    const r = await applyAlt(admin.graphql, items.slice(0, BATCH));
+    return { altApplied: r.done, errors: r.errors.slice(0, 5) };
+  }
   return { error: "Unknown fix" };
 };
 
 export default function Fixes() {
-  const { plan, health, byType, untypedTotal, scores } = useLoaderData<typeof loader>();
+  const { plan, health, byType, untypedTotal, scores, alt, guides } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<any>();
   const canApply = plan.features.includes("fixes");
   const busy = fetcher.state !== "idle";
@@ -58,6 +72,11 @@ export default function Fixes() {
       {fetcher.data?.applied != null && (
         <s-banner tone="success" heading={`Set the product type on ${fetcher.data.applied} products`}>
           {fetcher.data.errors?.length ? `Some failed: ${fetcher.data.errors.join("; ")}` : "Run the shelf test again to see the effect."}
+        </s-banner>
+      )}
+      {fetcher.data?.altApplied != null && (
+        <s-banner tone="success" heading={`Added alt text to ${fetcher.data.altApplied} images`}>
+          {fetcher.data.errors?.length ? `Some failed: ${fetcher.data.errors.join("; ")}` : "Agents and screen readers can now tell what each image shows."}
         </s-banner>
       )}
       {fetcher.data?.error && <s-banner tone="critical" heading={fetcher.data.error} />}
@@ -136,7 +155,50 @@ export default function Fixes() {
         </s-stack>
       </s-section>
 
-      <s-section heading="3. Review what agents see that shoppers don't">
+      <s-section heading="3. Describe your product images">
+        <s-stack direction="block" gap="base">
+          <s-text>
+            {alt.missing
+              ? `${alt.missing.toLocaleString()} of ${alt.images.toLocaleString()} images on your active products have no alt text. `
+              : `Every image on your active products has alt text. `}
+            Agents and Google read alt text to know what an image shows. We fill it from the brand and product name;
+            you can refine any of them later in Shopify.
+          </s-text>
+          {alt.missing > 0 && (
+            <>
+              <s-text color="subdued">For example: {alt.examples.join(" · ")}</s-text>
+              <s-stack direction="inline" gap="small">
+                <s-button disabled={!canApply || busy || undefined} loading={busy || undefined}
+                  onClick={() => fetcher.submit({ intent: "alt" }, { method: "post" })}>
+                  Add alt text{alt.missing > BATCH ? " (next batch)" : ""}
+                </s-button>
+              </s-stack>
+            </>
+          )}
+        </s-stack>
+      </s-section>
+
+      {guides.length > 0 && (
+        <s-section heading="4. Fixes to make in Shopify or your CDN">
+          <s-stack direction="block" gap="base">
+            <s-text>These came from the readiness check. The app can't change them for you, so here's how.</s-text>
+            {guides.map((c: any) => (
+              <s-box key={c.id} padding="base" border="base" borderRadius="base">
+                <s-stack direction="block" gap="small-300">
+                  <s-stack direction="inline" gap="small" alignItems="center">
+                    <s-badge tone={c.status === "fail" ? "critical" : "warning"}>{c.status === "fail" ? "Fix" : "Improve"}</s-badge>
+                    <s-text type="strong">{c.title}</s-text>
+                  </s-stack>
+                  <s-text>{c.detail}</s-text>
+                  <s-text color="subdued">{c.fix}</s-text>
+                </s-stack>
+              </s-box>
+            ))}
+          </s-stack>
+        </s-section>
+      )}
+
+      <s-section heading={guides.length ? "5. Review what agents see that shoppers don't" : "4. Review what agents see that shoppers don't"}>
         <s-stack direction="block" gap="small">
           <s-text>
             Internal tags and collections are passed to agents with your products. They can't use them, and they make
