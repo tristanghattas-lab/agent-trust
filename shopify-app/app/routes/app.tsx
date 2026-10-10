@@ -3,10 +3,14 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
-import { authenticate } from "../shopify.server";
+import { authenticate, BILLING_ON, BILLING_TEST } from "../shopify.server";
+import { syncBilling } from "../agent-trust.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+  // Runs on each full load of the app, including the return from Shopify's
+  // billing approval page, so a new plan shows straight away.
+  if (BILLING_ON) await syncBilling(admin.graphql, session.shop, BILLING_TEST);
 
   // eslint-disable-next-line no-undef
   return { apiKey: process.env.SHOPIFY_API_KEY || "" };

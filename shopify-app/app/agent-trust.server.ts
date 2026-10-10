@@ -267,6 +267,35 @@ export async function changePlan(shop: string, body: { plan?: string; start_tria
   return (await apiCall("/plans", { method: "POST", body: JSON.stringify({ shop, ...body }) })) as Plan;
 }
 
+// Shopify billing -> plan. Shopify is the source of truth for paid plans once
+// BILLING=shopify; the API's plan row is kept in step from it.
+type Gql = (query: string, opts?: any) => Promise<Response>;
+
+export async function activeSubscriptions(graphql: Gql, includeTest: boolean) {
+  const r = await graphql(`#graphql
+    query { currentAppInstallation { activeSubscriptions { id name status test } } }`);
+  const subs = ((await r.json()).data?.currentAppInstallation?.activeSubscriptions || []) as
+    { id: string; name: string; status: string; test: boolean }[];
+  return subs.filter((s) => s.status === "ACTIVE" && (includeTest || !s.test));
+}
+
+export function planForSubscriptions(subs: { name: string }[]): "free" | "growth" | "trust" {
+  const names = subs.map((s) => s.name.toLowerCase());
+  return names.includes("trust") ? "trust" : names.includes("growth") ? "growth" : "free";
+}
+
+/** Read the store's Shopify subscription and update the API's plan to match. */
+export async function syncBilling(graphql: Gql, shop: string, includeTest: boolean): Promise<Plan> {
+  const current = await getPlan(shop);
+  try {
+    const want = planForSubscriptions(await activeSubscriptions(graphql, includeTest));
+    return want === current.plan ? current : await changePlan(shop, { plan: want });
+  } catch (e) {
+    console.error("billing sync failed", shop, e);
+    return current;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Agent shelf test (API runs it; see app/shelf.py)
 // ---------------------------------------------------------------------------

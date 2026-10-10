@@ -136,3 +136,12 @@ services:
           type: web
           name: agent-trust-api
           envVarKey: METRICS_API_KEY
+      # Shopify billing: "shopify" only on the public App Store app (custom
+      # apps can't bill). BILLING_TEST=true means no real charges.
+      - key: BILLING
+        value: "off"
+      - key: BILLING_TEST
+        value: "true"
+      # Shown on /privacy and /support (App Store listing links).
+      - key: SUPPORT_EMAIL
+        sync: false

@@ -29,6 +29,11 @@ api_version = "2026-10"
   uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
 
+  # Paid plan approved, changed, cancelled or frozen (Shopify billing).
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/subscriptions_update"
+  topics = [ "app_subscriptions/update" ]
+
   # Sent straight to the Agent Trust API, signed with this app's secret.
   # Orders: attribution, agent orders, dispute evidence.
   [[webhooks.subscriptions]]
