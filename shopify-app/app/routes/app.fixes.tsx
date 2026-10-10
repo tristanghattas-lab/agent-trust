@@ -66,8 +66,9 @@ export default function Fixes() {
         <s-stack direction="block" gap="base">
           <s-text>
             {health ? `${health.no_product_type.toLocaleString()} of ${health.products.toLocaleString()} products have no product type. ` : ""}
-            Agents use the type to tell a rosé from a Fiano and a Champagne from a spirit. We can set it from the
-            collection each product is already in. {untypedTotal.toLocaleString()} can be set this way.
+            Agents use the product type to tell what something is (a rain jacket from a fleece, a rosé from a white).
+            We can set it from the collection each product is already in. {untypedTotal.toLocaleString()} can be set this
+            way. Skip any type that doesn't look right.
           </s-text>
           {!canApply && (
             <Locked feature="fixes" title="Apply fixes in one click" trialAvailable={plan.trial_available}>
@@ -99,21 +100,21 @@ export default function Fixes() {
               </s-table-body>
             </s-table>
           ) : (
-            <s-text color="subdued">Nothing to set: every product in a wine, spirits or accessories collection has a type.</s-text>
+            <s-text color="subdued">Nothing to set: every product in one of your product collections already has a type.</s-text>
           )}
         </s-stack>
       </s-section>
 
-      <s-section heading="2. Put critic scores where agents can read them">
+      <s-section heading="2. Put ratings and key details where agents can read them">
         <s-stack direction="block" gap="small">
           <s-text>
             {health ? `${health.scores_in_description.toLocaleString()} products have a critic score in their description. ` : ""}
-            Scores shown on your product pages but stored elsewhere never reach agents, so an agent asked for "a 95-point
-            Cabernet" can't confirm yours.
+            Ratings, scores and key details (size, materials, compatibility, cellaring) shown on your pages but stored in
+            separate fields don't reach agents, so an agent can't confirm them when a shopper asks.
           </s-text>
           {scores.length ? (
             <>
-              <s-text type="strong">Where your scores and cellaring notes are stored:</s-text>
+              <s-text type="strong">Where these details are stored:</s-text>
               <s-unordered-list>
                 {scores.map((f: any) => (
                   <s-list-item key={f.key}>

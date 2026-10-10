@@ -279,6 +279,12 @@ export const shelfStart = (shop: string) =>
 // ---------------------------------------------------------------------------
 // Fix queue: product types from the store's own collections
 // ---------------------------------------------------------------------------
+// Collections that are promotions or plumbing, not a kind of product.
+const JUNK = /^(all|all-products|frontpage|home|catalog|sale|new|new-releases|best-?sellers?|featured|thank-you|.*(boxing|black-friday|cyber|event|clearance|offer|deal|gift-card|test|hidden|archive|subscription|email|newsletter|feed|under-|over-|off-).*)$/i;
+
+// Collection titles that describe a selection, not a kind of product.
+const NOT_A_KIND = /\d|%|point|\boff\b|under|over|gift|best|club|pack|bundle|\btop\b|\bour\b|\bshop\b|edit|picks|favou?rite|exclusive|release|special|limited|sale|new|popular|trending|staff|award|deal|secret/i;
+
 // First matching collection handle decides the type.
 const TYPE_RULES: [RegExp, string][] = [
   [/^(non-alcohol|non-alcoholic|alcohol-free)$/, "Non-Alcoholic Wine"],
@@ -301,11 +307,23 @@ export type TypeProposal = { id: string; title: string; proposed: string; via: s
  */
 export async function untypedProducts(graphql: GraphQL): Promise<TypeProposal[]> {
   const colRes = await graphql(`#graphql
-    query cols { collections(first: 250) { nodes { handle } } }`);
-  const handles: string[] = ((await colRes.json())?.data?.collections?.nodes ?? []).map((c: any) => c.handle);
+    query cols { collections(first: 250) { nodes { handle title productsCount { count } } } }`);
+  const cols: { handle: string; title: string; productsCount?: { count: number } }[] =
+    (await colRes.json())?.data?.collections?.nodes ?? [];
+  const handles = cols.map((c) => c.handle);
+  // Rules first (known categories); then, for any store, a product's most
+  // specific real collection names its type ("Hiking Boots" -> Hiking Boots).
+  const generic = cols
+    .filter((c) => !JUNK.test(c.handle) && !NOT_A_KIND.test(c.title) && (c.productsCount?.count ?? 0) >= 3)
+    .sort((a, b) => (a.productsCount?.count ?? 0) - (b.productsCount?.count ?? 0))
+    .slice(0, 40);
+  const passes: [RegExp, string][] = [
+    ...TYPE_RULES,
+    ...generic.map((c) => [new RegExp(`^${c.handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`), c.title] as [RegExp, string]),
+  ];
   const seen = new Set<string>();
   const out: TypeProposal[] = [];
-  for (const [re, type] of TYPE_RULES) {
+  for (const [re, type] of passes) {
     for (const handle of handles.filter((h) => re.test(h))) {
       let after: string | null = null;
       for (let i = 0; i < 8; i++) {
@@ -356,7 +374,7 @@ export async function scoreFields(graphql: GraphQL): Promise<{ key: string; exam
   for (const p of nodes) {
     for (const m of p.metafields.nodes) {
       const k = `${m.namespace}.${m.key}`;
-      if (!/score|point|critic|rating|review|cellar|drink|window|aging|ageing/i.test(k)) continue;
+      if (!/score|point|critic|rating|review|cellar|drink|window|aging|ageing|material|size|dimension|compatib|spec|ingredient|warranty/i.test(k)) continue;
       const f = (found[k] ??= { examples: [], products: 0 });
       f.products++;
       if (f.examples.length < 3) f.examples.push(`${p.title}: ${String(m.value).slice(0, 120)}`);

@@ -103,6 +103,33 @@ export default function Home() {
         </s-banner>
       )}
 
+      {(() => {
+        const steps = [
+          { done: scanStatus === "done", label: `Check your last ${scanDays} days of orders for AI shoppers`, busy: "Checking…" },
+          { done: shelf?.status === "done" || !!shelf?.run, label: "Test whether AI agents can find your products", busy: "Testing… (a few minutes)" },
+          { done: pixel === "on" || !!sources.pixel, label: "Track checkout steps (switched on for you)", busy: "Switching on…" },
+          { done: !!sources.tracker, label: "Switch on storefront tracking (one click in your theme)", action: embedLink },
+        ];
+        if (steps.every((x) => x.done)) return null;
+        return (
+          <s-section heading="Getting started">
+            <s-stack direction="block" gap="small">
+              {steps.map((x) => (
+                <s-stack key={x.label} direction="inline" gap="small" alignItems="center">
+                  <s-icon type={x.done ? "check-circle" : "circle"} tone={x.done ? "success" : "neutral"} />
+                  <s-text>{x.label}</s-text>
+                  {!x.done && x.action ? (
+                    <s-button variant="primary" href={x.action} target="_blank">Switch on</s-button>
+                  ) : !x.done && x.busy ? (
+                    <s-text color="subdued">{x.busy}</s-text>
+                  ) : null}
+                </s-stack>
+              ))}
+            </s-stack>
+          </s-section>
+        );
+      })()}
+
       <s-section heading="Can AI agents find your products?">
         {shelf?.run ? (
           <s-stack direction="block" gap="base">
