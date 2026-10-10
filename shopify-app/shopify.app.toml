@@ -19,6 +19,11 @@ redirect_urls = [ "https://agent-trust-shopify.onrender.com/auth/callback" ]
 [webhooks]
 api_version = "2026-10"
 
+  # Mandatory privacy webhooks (required for the App Store).
+  [[webhooks.subscriptions]]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+  uri = "/webhooks/compliance"
+
   # Handled by the app itself: deletes the store's session on uninstall.
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/uninstalled"
