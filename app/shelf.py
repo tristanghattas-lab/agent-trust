@@ -159,23 +159,41 @@ def _available(p: dict) -> bool:
 
 
 def _nice_price(x: float) -> int:
-    for step in (10, 20, 25, 50, 100, 200, 250, 500, 1000):
+    """A round price cap at or just above x (14 -> 15, 152 -> 200), so the
+    typical product fits under it."""
+    import math
+    for step in (5, 10, 20, 25, 50, 100, 200, 250, 500, 1000):
         if x <= step * 4:
-            return int(round(x / step) * step) or step
-    return int(round(x, -3))
+            return int(math.ceil(x / step) * step) or step
+    return int(math.ceil(x / 1000) * 1000)
 
 
-def build_requests(collections: list[dict], members: dict[str, list[dict]]) -> list[ShopperRequest]:
-    """Auto requests from the store's biggest real collections, plus the wine
-    pack when the store sells wine."""
+SYMBOL = {"AUD": "$", "USD": "$", "CAD": "$", "NZD": "$", "SGD": "$", "HKD": "$", "GBP": "£", "EUR": "€",
+          "JPY": "¥", "INR": "₹"}
+
+
+def _rank_key(c: dict, members: dict[str, list[dict]]) -> int:
+    if isinstance(c.get("products_count"), int):
+        return -c["products_count"]
+    return -len([p for p in members.get(c["handle"], []) if _available(p)])
+
+
+def build_requests(collections: list[dict], members: dict[str, list[dict]], products: list[dict] | None = None,
+                   currency: str = "AUD") -> list[ShopperRequest]:
+    """Requests from the store's own range, for any kind of store: its biggest
+    real collections and product types, each plain and with a typical price
+    cap; plus a vertical pack where we have one (wine)."""
+    sym = SYMBOL.get(currency, currency + " ")
     handles = {c["handle"] for c in collections}
     reqs: list[ShopperRequest] = []
     is_wine = any("wine" in h for h in handles) and any(h in handles for h in ("red-wine", "shiraz", "champagne"))
     if is_wine:
         reqs += [r for r in WINE_PACK if any(h in handles for h in r.collections)]
-    ranked = sorted(
-        (c for c in collections if not JUNK_COLLECTION.match(c["handle"]) and members.get(c["handle"])),
-        key=lambda c: -len([p for p in members[c["handle"]] if _available(p)]))
+        if sym != "$":
+            for r in reqs:
+                r.query = r.query.replace("$", sym)
+    ranked = sorted((c for c in collections if not JUNK_COLLECTION.match(c["handle"]) and members.get(c["handle"])),
+                    key=lambda c: _rank_key(c, members))
     used = {h for r in reqs for h in r.collections}
     for c in ranked:
         if len([r for r in reqs if r.source == "auto"]) >= MAX_AUTO_REQUESTS:
@@ -189,9 +207,23 @@ def build_requests(collections: list[dict], members: dict[str, list[dict]]) -> l
         reqs.append(ShopperRequest(f"a-{c['handle']}", c["title"], [c["handle"]], source="auto"))
         if median > 0:
             cap = _nice_price(median)
-            reqs.append(ShopperRequest(f"a-{c['handle']}-u{cap}", f"{c['title']} under ${cap}", [c["handle"]], cap,
+            reqs.append(ShopperRequest(f"a-{c['handle']}-u{cap}", f"{c['title']} under {sym}{cap}", [c["handle"]], cap,
                                        source="auto"))
         used.add(c["handle"])
+    # Product types the collections didn't already cover (stores that organise by type, not collection).
+    if products and len([r for r in reqs if r.source == "auto"]) < MAX_AUTO_REQUESTS:
+        by_type: dict[str, list[dict]] = {}
+        for p in products:
+            t = (p.get("product_type") or "").strip()
+            if t and _available(p):
+                by_type.setdefault(t, []).append(p)
+        titles = {c["title"].lower() for c in collections if c["handle"] in used}
+        for t, items in sorted(by_type.items(), key=lambda kv: -len(kv[1]))[:6]:
+            if len(items) < 3 or t.lower() in titles:
+                continue
+            key = "type:" + t
+            members[key] = items  # scored by membership of this type
+            reqs.append(ShopperRequest(f"t-{re.sub(r'[^a-z0-9]+', '-', t.lower())}", t, [key], source="auto"))
     return reqs
 
 
@@ -243,7 +275,8 @@ def score_request(req: ShopperRequest, results: list[dict], members: dict[str, l
     unmet = []
     if good and req.needs:
         for need in req.needs:
-            if need == "score" and not any(SCORE_TEXT.search(r["description"]) for r in good):
+            score_col = lambda r: any(re.search(r"(9\d|100)-?points?|point-club|critic", h or "") for h in r["collections"])  # noqa: E731
+            if need == "score" and not any(SCORE_TEXT.search(r["description"]) or score_col(r) for r in good):
                 unmet.append("critic scores aren't in the data agents get")
             if need == "cellar" and not any(re.search(r"cellar|drink (now|by|until)|\d+\s*\+?\s*years", r["description"], re.I)
                                             for r in good):
@@ -293,10 +326,22 @@ def catalogue_health(products: list[dict], collections: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # A full run
 # ---------------------------------------------------------------------------
-def run_shelf_test(domain: str, country: str = "AU", currency: str = "AUD") -> dict:
+def store_locale(domain: str) -> tuple[str, str]:
+    """(country code, currency) from the store's public meta, default AU/AUD."""
+    try:
+        m = _get(f"https://{domain}/meta.json")
+        country = (m.get("country") or "AU").upper()[:2]
+        return country, (m.get("currency") or "AUD").upper()
+    except Exception:  # noqa: BLE001
+        return "AU", "AUD"
+
+
+def run_shelf_test(domain: str, country: str | None = None, currency: str | None = None) -> dict:
     """Run every request against the store's agent search. `domain` is the
     store's myshopify or storefront domain."""
     started = datetime.now(timezone.utc)
+    if not (country and currency):
+        country, currency = store_locale(domain)
     _note(stage="catalogue")
     products = fetch_catalogue(domain)
     _note(stage="collections", products=len(products))
@@ -305,13 +350,15 @@ def run_shelf_test(domain: str, country: str = "AU", currency: str = "AUD") -> d
     pack = {h for r in WINE_PACK for h in r.collections}
     # Members for the wine-pack collections and up to 40 other real ones
     # (each is a few public requests, so keep the run to a couple of minutes).
-    others = [h for h in handles if h not in pack and not JUNK_COLLECTION.match(h)][:40]
+    ranked = sorted((c for c in collections if c["handle"] not in pack and not JUNK_COLLECTION.match(c["handle"])),
+                    key=lambda c: -(c.get("products_count") or 0))
+    others = [c["handle"] for c in ranked][:16]
     from concurrent.futures import ThreadPoolExecutor
     targets = [*[h for h in handles if h in pack], *others]
     _note(stage="collection members", collections=len(collections), member_targets=len(targets))
     with ThreadPoolExecutor(max_workers=6) as pool:
         members = dict(zip(targets, pool.map(lambda h: fetch_collection_members(domain, h, max_pages=4), targets)))
-    reqs = build_requests(collections, members)
+    reqs = build_requests(collections, members, products, currency)
     _note(stage="agent search", requests=len(reqs), done=0)
     results = []
     for req in reqs:

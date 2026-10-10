@@ -111,3 +111,19 @@ def test_auto_requests_skip_junk_collections():
     ids = {r.id for r in reqs}
     assert not any("thank-you" in i for i in ids)
     assert "w-rose-35" in ids and "w-otago" not in ids  # pack requests need the store's collection
+
+
+def test_generic_store_requests_use_counts_and_types():
+    cols = [{"handle": "boots", "title": "Boots", "products_count": 40},
+            {"handle": "socks", "title": "Socks", "products_count": 120},
+            {"handle": "black-friday-deals", "title": "Black Friday", "products_count": 500}]
+    boots = [_p(f"boot-{i}", f"Boot {i}", 150 + i) for i in range(5)]
+    socks = [_p(f"sock-{i}", f"Sock {i}", 12 + i) for i in range(5)]
+    jackets = [_p(f"jacket-{i}", f"Jacket {i}", 220, ptype="Jackets") for i in range(4)]
+    members = {"boots": boots, "socks": socks, "black-friday-deals": boots + socks}
+    reqs = shelf.build_requests(cols, members, products=boots + socks + jackets, currency="GBP")
+    queries = [r.query for r in reqs]
+    assert queries[0] == "Socks"  # biggest real collection first
+    assert "Socks under £15" in queries and not any("Black Friday" in q for q in queries)
+    assert "Jackets" in queries  # product type no collection covers
+    assert all(r.source == "auto" for r in reqs)
