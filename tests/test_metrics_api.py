@@ -96,8 +96,10 @@ def test_session_detail_only_found_in_its_own_store(client):
     assert other.status_code == 404
 
 
-def test_threat_runs_are_scoped(client):
-    r = client.post("/threat-runs", json={"agent_surface": "browser-use", "task_name": "unearned_discount",
+def test_threat_runs_are_scoped(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "admin-key")
+    assert client.post("/threat-runs", headers=AUTH, json={}).status_code == 403  # the app key can't log runs
+    r = client.post("/threat-runs", headers={"Authorization": "Bearer admin-key"}, json={"agent_surface": "browser-use", "task_name": "unearned_discount",
                                           "task_category": "discount", "result": "fail",
                                           "exploit_found": True, "shop": "store-d.myshopify.com"})
     assert r.status_code == 200

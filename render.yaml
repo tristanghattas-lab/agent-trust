@@ -33,7 +33,7 @@ services:
           property: connectionString
       # Comma-separated storefront origins allowed to post tracker data.
       - key: SITE_ORIGIN
-        value: https://icelabs-bdy57pfy.myshopify.com,https://73ee52.myshopify.com,https://checkskincare.com,https://www.checkskincare.com
+        value: '*'
       - key: SHOPIFY_STORE_DOMAIN
         value: icelabs-bdy57pfy.myshopify.com
       # Set these two in the Render dashboard after deploy — not committed
@@ -44,11 +44,19 @@ services:
         sync: false
       - key: SHOPIFY_ADMIN_API_TOKEN
         sync: false
-      # Bearer key for /metrics/* (the Shopify app's backend and the internal
-      # dashboard send it). Render generates it; copy it from the
-      # Environment tab when wiring up a client.
+      # Server-to-server keys (app/security.py). METRICS_API_KEY is the
+      # Shopify app's key (store-level reads and writes). ADMIN_API_KEY is for
+      # internal tools (threat-test harness): admin-only endpoints too.
+      # Rotate by setting APP_API_KEYS / ADMIN_API_KEYS to "new,old", moving
+      # callers to the new key, then removing the old one.
       - key: METRICS_API_KEY
         generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      # Stores accepted before they open the app (installed stores register
+      # themselves). Comma-separated myshopify domains.
+      - key: ALLOWED_SHOPS
+        value: 73ee52.myshopify.com,icelabs-bdy57pfy.myshopify.com
       # Store that untagged rows and untagged test runs belong to.
       - key: DEFAULT_SHOP
         value: icelabs-bdy57pfy.myshopify.com
@@ -79,6 +87,9 @@ services:
         fromDatabase:
           name: agent-trust-db
           property: connectionString
+      # Login for this dashboard (it reads every store's data). Locked if unset.
+      - key: DASHBOARD_PASSWORD
+        sync: false
       # Same secrets as the API, so the Connections page can encrypt
       # Cloudflare tokens the API can read, and show each store's Worker key.
       - key: EDGE_SIGNING_SECRET

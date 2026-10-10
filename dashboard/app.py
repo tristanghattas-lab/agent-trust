@@ -31,6 +31,51 @@ st.set_page_config(page_title="Agent Trust", page_icon="◆", layout="wide",
                    initial_sidebar_state="expanded")
 ui.inject_css()
 
+
+# ---------------------------------------------------------------------------
+# Login. The dashboard reads every store's data straight from the database,
+# so it's locked behind DASHBOARD_PASSWORD (set on Render). No password set
+# means locked (fails closed). Repeated wrong passwords lock everyone out
+# for a while, so it can't be guessed by brute force.
+# ---------------------------------------------------------------------------
+def _gate() -> None:
+    import hmac
+    import time as _time
+
+    if st.session_state.get("authed"):
+        return
+    expected = os.getenv("DASHBOARD_PASSWORD", "")
+    st.markdown("### Agent Trust")
+    if not expected:
+        st.error("This dashboard is locked. Set DASHBOARD_PASSWORD on the server to open it.")
+        st.stop()
+    fails = _failures()
+    now = _time.time()
+    recent = [t for t in fails if now - t < 600]
+    fails[:] = recent
+    if len(recent) >= 8:
+        st.error("Too many wrong passwords. Try again in 10 minutes.")
+        st.stop()
+    with st.form("login"):
+        pw = st.text_input("Password", type="password")
+        ok = st.form_submit_button("Sign in", type="primary")
+    if ok:
+        if hmac.compare_digest(pw.encode(), expected.encode()):
+            st.session_state["authed"] = True
+            st.rerun()
+        fails.append(now)
+        _time.sleep(1.5)
+        st.error("Wrong password.")
+    st.stop()
+
+
+@st.cache_resource
+def _failures() -> list:
+    return []  # shared across sessions in this server process
+
+
+_gate()
+
 PAGES = ["Overview", "AI referrals", "Agent sessions", "Orders", "Products", "Shelf test", "Threat testing",
          "Run report", "Connections"]
 # Deep links: ?view=report&minutes=30&shop=<store> opens the run report directly.

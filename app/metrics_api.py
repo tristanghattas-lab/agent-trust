@@ -34,22 +34,18 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
 
-from app import metrics
+from app import metrics, security
 from app.db import engine
 from app.shops import DEMO_SHOP, normalise_shop
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 
-def require_api_key(authorization: str | None = Header(default=None)) -> None:
-    expected = os.getenv("METRICS_API_KEY", "")
-    if not expected:
-        raise HTTPException(status_code=503, detail="metrics API key not configured")
-    supplied = (authorization or "").removeprefix("Bearer ").strip()
-    if not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
+def require_api_key(request: Request, authorization: str | None = Header(default=None)) -> str:
+    """Store-level reads: the Shopify app's server or an admin tool (app/security.py)."""
+    return security.require_app(request, authorization)
 
 
 def resolve_shop(shop: str = Query(..., description="Store domain, or 'demo'")) -> str:

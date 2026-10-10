@@ -60,7 +60,16 @@ def get_plan(shop: str = Query(...), db: DBSession = Depends(get_db)):
     norm = normalise_shop(shop)
     if not norm:
         raise HTTPException(status_code=400, detail="invalid shop")
-    return describe(db.get(ShopPlan, norm), norm)
+    row = db.get(ShopPlan, norm)
+    if row is None:
+        # First time the app asks about this store: register it, so its
+        # storefront tracker and pixel data are accepted from now on.
+        row = ShopPlan(shop_domain=norm, plan="free")
+        db.add(row)
+        db.commit()
+        from app.security import register
+        register(norm)
+    return describe(row, norm)
 
 
 class PlanChange(BaseModel):

@@ -36,6 +36,7 @@ from app.commerce import router as commerce_router
 from app.edge import router as edge_router
 from app.metrics_api import router as metrics_router
 from app.shops import DEFAULT_SHOP, normalise_shop
+from app import security
 
 # Uvicorn only configures its own loggers; without a handler here, INFO
 # records from these app loggers fall through to Python's last-resort
@@ -46,7 +47,9 @@ cors_logger = logging.getLogger("agent_trust.cors")
 
 load_dotenv()
 
-app = FastAPI(title="Agent Trust & Commerce Intelligence — ingestion API")
+_docs = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+app = FastAPI(title="Agent Trust & Commerce Intelligence — ingestion API",
+              docs_url="/docs" if _docs else None, redoc_url=None, openapi_url="/openapi.json" if _docs else None)
 
 # Loose CORS for v0 — tighten to SITE_ORIGIN once this is pointed at the
 # real United Cellars domain.
@@ -61,6 +64,9 @@ app.add_middleware(
     allow_methods=["POST", "GET"],
     allow_headers=["*"],
 )
+# Rate limits, body size cap and security headers (app/security.py). Added
+# after CORS so it runs first and refuses floods before any other work.
+app.add_middleware(security.SecurityMiddleware)
 
 
 class OriginLoggingMiddleware(BaseHTTPMiddleware):
@@ -221,6 +227,13 @@ def tracker_js():
 @app.post("/ingest")
 def ingest(event: IngestEvent, db: DBSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
+    shop = normalise_shop(event.shop) or DEFAULT_SHOP
+    # Only stores that installed the app (or are allow-listed) are recorded,
+    # each within a per-store budget. Others are acknowledged and dropped.
+    if not security.is_registered(shop):
+        return {"status": "ignored"}
+    if not security.shop_allowed(shop):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
 
     session = (
         db.query(SessionModel)
@@ -428,7 +441,7 @@ async def shopify_order_webhook(
     }
 
 
-@app.get("/orders/evidence")
+@app.get("/orders/evidence", dependencies=[Depends(security.require_admin)])
 def order_evidence(email_prefix: str, db: DBSession = Depends(get_db)):
     """Evidence for orders placed with an email starting with `email_prefix`.
 
@@ -440,7 +453,8 @@ def order_evidence(email_prefix: str, db: DBSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="email_prefix too short")
     rows = (
         db.query(Order)
-        .filter(Order.customer_email.like(email_prefix.replace("%", "") + "%"))
+        .filter(Order.customer_email.like(
+            email_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", escape="\\"))
         .all()
     )
     return [
@@ -449,7 +463,7 @@ def order_evidence(email_prefix: str, db: DBSession = Depends(get_db)):
     ]
 
 
-@app.post("/threat-runs")
+@app.post("/threat-runs", dependencies=[Depends(security.require_admin)])
 def log_threat_run(run: ThreatTestRunIn, db: DBSession = Depends(get_db)):
     data = run.model_dump()
     data["shop_domain"] = normalise_shop(data.pop("shop")) or DEFAULT_SHOP

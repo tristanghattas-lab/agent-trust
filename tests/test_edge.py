@@ -19,6 +19,7 @@ TS = int(time.time() * 1000) - 3_600_000  # an hour ago
 def secrets(monkeypatch):
     monkeypatch.setenv("EDGE_SIGNING_SECRET", "edge-secret-for-tests")
     monkeypatch.setenv("METRICS_API_KEY", KEY)
+    monkeypatch.setenv("ADMIN_API_KEY", KEY)  # Cloudflare connections and edge keys are admin-only
 
 
 @pytest.fixture(scope="module")

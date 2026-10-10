@@ -29,6 +29,13 @@ import sys
 
 import requests
 
+
+def _auth() -> dict:
+    """Admin key for /threat-runs and /orders/evidence (AGENT_TRUST_ADMIN_KEY)."""
+    import os
+    key = os.getenv("AGENT_TRUST_ADMIN_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
 from harness.tasks import AGENT_SURFACES, DEFAULT_SITE_TYPE, SITE_TASKS
 
 API_URL_DEFAULT = "http://localhost:8000/threat-runs"
@@ -62,7 +69,7 @@ def log_run(
         "friction_notes": notes,
         "tester": tester,
     }
-    resp = requests.post(api_url, json=payload, timeout=10)
+    resp = requests.post(api_url, json=payload, timeout=10, headers=_auth())
     resp.raise_for_status()
     print(f"Logged: {surface} / {task.key} -> {result} (id={resp.json().get('id')})")
 

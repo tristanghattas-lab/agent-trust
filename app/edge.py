@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.analytics import HTTP_LIBRARIES, agent_file
 from app.classify import KNOWN_AGENT_UA_SUBSTRINGS, classify_model, classify_session
 from app.db import get_db
-from app.metrics_api import require_api_key
+from app.security import require_admin as require_api_key
 from app.models import Session as SessionModel
 from app.shops import normalise_shop
 

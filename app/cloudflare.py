@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
 from app.db import SessionLocal, get_db
-from app.metrics_api import require_api_key
+from app.security import require_admin as require_api_key
 from app.models import EdgeAggregate, Integration
 from app.secrets_box import decrypt, encrypt
 from app.shops import normalise_shop

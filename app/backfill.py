@@ -19,7 +19,7 @@ import hmac
 import os
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
@@ -31,11 +31,10 @@ router = APIRouter(prefix="/backfill", tags=["backfill"])
 MAX_BATCH = 250
 
 
-def require_key(authorization: str | None = Header(default=None)) -> None:
-    expected = os.getenv("METRICS_API_KEY", "")
-    supplied = (authorization or "").removeprefix("Bearer ").strip()
-    if not expected or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
+def require_key(request: Request, authorization: str | None = Header(default=None)) -> str:
+    """The Shopify app's server or an admin tool (app/security.py)."""
+    from app.security import require_app
+    return require_app(request, authorization)
 
 
 class PastOrder(BaseModel):
@@ -121,13 +120,36 @@ class ShelfStart(BaseModel):
     domain: str | None = None
 
 
-@shelf_router.post("/run", dependencies=[Depends(require_key)])
-def shelf_run(body: ShelfStart):
+SHELF_COOLDOWN_MINUTES = 30
+
+
+@shelf_router.post("/run")
+def shelf_run(body: ShelfStart, role: str = Depends(require_key)):
+    """Start a run. The domain must be the store's own (its myshopify domain,
+    or a storefront domain whose public meta names that store), so this
+    can't be pointed at someone else's site. One run per store every 30
+    minutes, except for admin tools."""
     from app import shelf
     shop = normalise_shop(body.shop)
     if not shop:
         raise HTTPException(status_code=400, detail="invalid shop")
     domain = (body.domain or shop).strip().lower().removeprefix("https://").removeprefix("http://").split("/")[0]
+    if domain != shop:
+        try:
+            meta = shelf._get(f"https://{domain}/meta.json")
+            owner = (meta.get("myshopify_domain") or "").lower()
+        except Exception:  # noqa: BLE001
+            owner = ""
+        if owner != shop:
+            raise HTTPException(status_code=400, detail="domain doesn't belong to this store")
+    if role != "admin":
+        last = shelf.latest(shop, history=1)
+        run = last.get("run") or {}
+        fin = run.get("finished_at")
+        if fin:
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            if _dt.now(_tz.utc) - _dt.fromisoformat(fin) < _td(minutes=SHELF_COOLDOWN_MINUTES):
+                raise HTTPException(status_code=429, detail=f"one run every {SHELF_COOLDOWN_MINUTES} minutes")
     started = shelf.start_in_background(shop, domain)
     return {"shop": shop, "started": started, "status": "running"}
 

@@ -179,6 +179,11 @@ async def pixel_events(request: Request, db: DBSession = Depends(get_db)):
     event = body.get("event")
     if not shop or event not in PIXEL_EVENTS:
         raise HTTPException(status_code=400, detail="unknown shop or event")
+    from app import security
+    if not security.is_registered(shop):
+        return {"status": "ignored"}
+    if not security.shop_allowed(shop):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
     key = body.get("session_key")
     db.add(CommerceEvent(
         shop_domain=shop, source="pixel", topic=event,
@@ -226,6 +231,11 @@ async def journey(request: Request, db: DBSession = Depends(get_db)):
     key = str(body.get("session_key") or "")[:64]
     if not shop or not key or not key.replace("_", "").replace("-", "").isalnum():
         raise HTTPException(status_code=400, detail="unknown shop or session")
+    from app import security
+    if not security.is_registered(shop):
+        return {"status": "ignored", "events": 0}
+    if not security.shop_allowed(shop):
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
     n = 0
     for e in (body.get("events") or [])[:MAX_JOURNEY_EVENTS]:
         if not isinstance(e, dict) or e.get("kind") not in JOURNEY_KINDS:

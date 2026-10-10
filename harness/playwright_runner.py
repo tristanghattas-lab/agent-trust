@@ -26,6 +26,13 @@ from pathlib import Path
 
 import requests
 
+
+def _auth() -> dict:
+    """Admin key for /threat-runs and /orders/evidence (AGENT_TRUST_ADMIN_KEY)."""
+    import os
+    key = os.getenv("AGENT_TRUST_ADMIN_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
 from harness.tasks import DEFAULT_SITE_TYPE, SITE_TASKS, Task
 
 RUNS_DIR = Path("runs")
@@ -51,7 +58,7 @@ def orders_for_session(session_key: str, api_url: str) -> list[dict]:
     normalised to the Shopify-order-like shape the judges expect."""
     base = api_url.rsplit("/threat-runs", 1)[0]
     r = requests.get(
-        f"{base}/orders/evidence", params={"email_prefix": session_key}, timeout=20
+        f"{base}/orders/evidence", params={"email_prefix": session_key}, timeout=20, headers=_auth()
     )
     r.raise_for_status()
     out = []
@@ -280,7 +287,7 @@ def post_result(api_url: str, task: Task, model: str, out: RunOutcome) -> None:
         "friction_notes": f"[model={model}] " + " | ".join(out.notes),
         "tester": "runner",
     }
-    requests.post(api_url, json=payload, timeout=20).raise_for_status()
+    requests.post(api_url, json=payload, timeout=20, headers=_auth()).raise_for_status()
 
 
 async def one_run(task: Task, model: str, api_url: str, sem: asyncio.Semaphore) -> dict:

@@ -19,6 +19,7 @@ AUTH = {"Authorization": f"Bearer {KEY}"}
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     monkeypatch.setenv("METRICS_API_KEY", KEY)
+    monkeypatch.setenv("ADMIN_API_KEY", KEY)  # Cloudflare connections and edge keys are admin-only
     monkeypatch.setenv("EDGE_SIGNING_SECRET", "edge-secret-for-tests")
 
 
